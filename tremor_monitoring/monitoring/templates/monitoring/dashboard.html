@@ -1,0 +1,1175 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>TREMOR | Smart Environment Intelligence</title>
+    
+    <!-- CDN Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(145deg, #eef2ff 0%, #e0e7ff 100%);
+            overflow-x: hidden;
+        }
+
+        :root {
+            --primary: #1e40af;
+            --primary-light: #3b82f6;
+            --primary-glow: rgba(30, 64, 175, 0.2);
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --info: #0ea5e9;
+            --dark: #0f172a;
+            --gray: #475569;
+            --light-bg: rgba(255, 255, 255, 0.85);
+            --card-bg: rgba(255, 255, 255, 0.96);
+            --glass-border: 1px solid rgba(255, 255, 255, 0.5);
+            --shadow-sm: 0 8px 20px rgba(0, 0, 0, 0.03), 0 2px 6px rgba(0, 0, 0, 0.05);
+            --shadow-md: 0 20px 35px -10px rgba(0, 0, 0, 0.08);
+            --shadow-glow: 0 0 15px rgba(30, 64, 175, 0.2);
+            --zabbix-color: #d93f21;
+        }
+
+        body.dark {
+            background: linear-gradient(135deg, #0f172a 0%, #0a0f1f 100%);
+            --light-bg: rgba(30, 41, 59, 0.85);
+            --card-bg: rgba(30, 41, 59, 0.96);
+            --glass-border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .app-container {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 280px;
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border-right: var(--glass-border);
+            padding: 28px 20px;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            z-index: 100;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding-bottom: 28px;
+            border-bottom: 1px solid rgba(100, 116, 139, 0.2);
+            margin-bottom: 28px;
+        }
+
+        .brand-text {
+            display: flex;
+            flex-direction: column;
+        }
+        .brand-name {
+            font-weight: 800;
+            font-size: 22px;
+            line-height: 1.2;
+            background: linear-gradient(135deg, var(--primary), var(--primary-light));
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        body.dark .brand-name {
+            background: linear-gradient(135deg, #e2e8f0, #60a5fa);
+            -webkit-background-clip: text;
+        }
+        .brand-sub {
+            font-size: 10px;
+            opacity: 0.6;
+            letter-spacing: 0.5px;
+        }
+
+        .menu-section {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            font-weight: 700;
+            color: var(--gray);
+            margin: 24px 0 12px 12px;
+        }
+
+        .menu-item {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 12px 16px;
+            width: 100%;
+            background: transparent;
+            border: none;
+            border-radius: 16px;
+            font-weight: 500;
+            font-size: 14px;
+            color: var(--gray);
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 6px;
+            text-decoration: none;
+        }
+
+        .menu-item i {
+            width: 22px;
+            font-size: 1.2rem;
+        }
+
+        .menu-item:hover {
+            background: rgba(59, 130, 246, 0.08);
+            color: var(--primary-light);
+            transform: translateX(4px);
+        }
+
+        .menu-item.active {
+            background: linear-gradient(95deg, var(--primary) 0%, var(--primary-light) 100%);
+            color: white;
+            box-shadow: 0 6px 14px rgba(37, 99, 235, 0.25);
+        }
+
+        .menu-item.zabbix-link {
+            background: rgba(217, 63, 33, 0.1);
+            border: 1px solid rgba(217, 63, 33, 0.3);
+            margin-top: 16px;
+            color: var(--zabbix-color);
+        }
+        .menu-item.zabbix-link i {
+            color: var(--zabbix-color);
+        }
+        .menu-item.zabbix-link:hover {
+            background: rgba(217, 63, 33, 0.2);
+            transform: translateX(4px);
+            border-color: var(--zabbix-color);
+        }
+        body.dark .menu-item.zabbix-link {
+            background: rgba(217, 63, 33, 0.15);
+            color: #f97316;
+        }
+        body.dark .menu-item.zabbix-link i {
+            color: #f97316;
+        }
+
+        .main-content {
+            flex: 1;
+            margin-left: 280px;
+            padding: 28px 32px;
+            transition: 0.3s;
+        }
+
+        .top-bar {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border-radius: 32px;
+            padding: 18px 28px;
+            margin-bottom: 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: var(--shadow-sm);
+            border: var(--glass-border);
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .page-title h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--dark), var(--primary));
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        body.dark .page-title h1 {
+            background: linear-gradient(135deg, #e2e8f0, #60a5fa);
+            -webkit-background-clip: text;
+        }
+
+        .top-bar-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .action-btn {
+            background: rgba(255, 255, 255, 0.65);
+            backdrop-filter: blur(8px);
+            padding: 8px 18px;
+            border-radius: 40px;
+            border: 1px solid rgba(0, 0, 0, 0.05);
+            font-weight: 500;
+            gap: 8px;
+            display: flex;
+            align-items: center;
+            transition: 0.2s;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        body.dark .action-btn {
+            background: rgba(51, 65, 85, 0.7);
+            color: #e2e8f0;
+        }
+
+        #logoutBtn {
+            background: #fee2e2;
+            color: #b91c1c;
+            border: 1px solid rgba(185, 28, 28, 0.3);
+        }
+        body.dark #logoutBtn {
+            background: rgba(185, 28, 28, 0.2);
+            color: #fca5a5;
+        }
+        #logoutBtn:hover {
+            background: #fecaca;
+            transform: scale(0.98);
+        }
+
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(8px);
+            border-radius: 32px;
+            border: var(--glass-border);
+            padding: 1.6rem;
+            margin-bottom: 1.8rem;
+            box-shadow: var(--shadow-md);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 25px 40px -12px rgba(0, 0, 0, 0.18);
+        }
+
+        /* GAUGE STYLES */
+        .gauge-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 5px 0;
+        }
+
+        .gauge-wrapper {
+            position: relative;
+            width: 150px;
+            height: 150px;
+        }
+
+        .gauge-svg {
+            transform: rotate(-90deg);
+            width: 150px;
+            height: 150px;
+        }
+
+        .gauge-bg {
+            fill: none;
+            stroke: rgba(100, 116, 139, 0.12);
+            stroke-width: 12;
+        }
+
+        .gauge-fill {
+            fill: none;
+            stroke-width: 12;
+            stroke-linecap: round;
+            transition: stroke-dashoffset 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .gauge-fill.temperature {
+            stroke: #f87171;
+        }
+
+        .gauge-fill.humidity {
+            stroke: #0ea5e9;
+        }
+
+        .gauge-value {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 28px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            text-align: center;
+            line-height: 1.2;
+        }
+
+        .gauge-value.temperature {
+            color: #f87171;
+        }
+
+        .gauge-value.humidity {
+            color: #0ea5e9;
+        }
+
+        .gauge-unit {
+            font-size: 14px;
+            font-weight: 500;
+            display: block;
+        }
+
+        .gauge-status {
+            font-size: 13px;
+            font-weight: 600;
+            padding: 4px 16px;
+            border-radius: 20px;
+            margin-top: 4px;
+            transition: all 0.3s;
+        }
+
+        .gauge-status.normal {
+            background: rgba(16, 185, 129, 0.12);
+            color: #10b981;
+        }
+
+        .gauge-status.warning {
+            background: rgba(245, 158, 11, 0.12);
+            color: #f59e0b;
+        }
+
+        .gauge-status.danger {
+            background: rgba(239, 68, 68, 0.12);
+            color: #ef4444;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 26px;
+            margin-bottom: 32px;
+        }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+            margin-top: 10px;
+            width: 100%;
+        }
+
+        .metric-card {
+            background: rgba(100, 116, 139, 0.06);
+            padding: 8px 6px;
+            border-radius: 14px;
+            text-align: center;
+            backdrop-filter: blur(4px);
+        }
+
+        .metric-card .label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--gray);
+            opacity: 0.6;
+        }
+
+        .metric-card .value {
+            font-size: 16px;
+            font-weight: 700;
+            margin-top: 2px;
+        }
+
+        .metric-card .value.success {
+            color: #10b981;
+        }
+
+        .metric-card .value.danger {
+            color: #ef4444;
+        }
+
+        .metric-card .value.accent {
+            color: #f97316;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            animation: pulse 2s infinite;
+        }
+        .status-dot.safe { background: #10b981; box-shadow: 0 0 6px #10b981; }
+        .status-dot.warning { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; animation: pulse 0.8s infinite; }
+        .status-dot.danger { background: #ef4444; box-shadow: 0 0 10px #ef4444; animation: pulse 0.5s infinite; }
+
+        @keyframes pulse {
+            0% { opacity: 0.6; transform: scale(0.9);}
+            100% { opacity: 1; transform: scale(1.2);}
+        }
+
+        .chart-container {
+            position: relative;
+            height: 280px;
+            width: 100%;
+        }
+
+        /* HISTORY & ALERTS - Enhanced Styles */
+        .history-alert-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 18px;
+            border-radius: 16px;
+            background: rgba(100, 116, 139, 0.04);
+            margin-bottom: 10px;
+            transition: all 0.3s ease;
+            border-left: 4px solid transparent;
+            position: relative;
+            overflow: hidden;
+            animation: slideIn 0.3s ease;
+        }
+
+        .history-alert-item:hover {
+            background: rgba(100, 116, 139, 0.08);
+            transform: translateX(4px);
+        }
+
+        .history-alert-item .alert-left {
+            display: flex;
+            align-items: center;
+            flex: 1;
+        }
+
+        .history-alert-item .alert-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 14px;
+            flex-shrink: 0;
+            font-size: 14px;
+        }
+
+        .history-alert-item .alert-icon.safe {
+            background: rgba(16, 185, 129, 0.12);
+            color: #10b981;
+        }
+
+        .history-alert-item .alert-icon.warning {
+            background: rgba(245, 158, 11, 0.12);
+            color: #f59e0b;
+        }
+
+        .history-alert-item .alert-icon.danger {
+            background: rgba(239, 68, 68, 0.12);
+            color: #ef4444;
+        }
+
+        .history-alert-item .alert-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .history-alert-item .alert-value {
+            font-weight: 600;
+            font-size: 15px;
+            color: var(--dark);
+        }
+
+        body.dark .history-alert-item .alert-value {
+            color: #e2e8f0;
+        }
+
+        .history-alert-item .alert-time {
+            font-size: 12px;
+            color: var(--gray);
+            opacity: 0.7;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .history-alert-item .alert-time i {
+            font-size: 11px;
+        }
+
+        .history-alert-item .alert-badge {
+            font-size: 12px;
+            font-weight: 600;
+            padding: 4px 16px;
+            border-radius: 20px;
+            letter-spacing: 0.3px;
+            white-space: nowrap;
+            margin-left: 12px;
+        }
+
+        .history-alert-item .alert-badge.safe {
+            background: rgba(16, 185, 129, 0.12);
+            color: #10b981;
+        }
+
+        .history-alert-item .alert-badge.warning {
+            background: rgba(245, 158, 11, 0.12);
+            color: #f59e0b;
+        }
+
+        .history-alert-item .alert-badge.danger {
+            background: rgba(239, 68, 68, 0.12);
+            color: #ef4444;
+        }
+
+        .history-alert-item.border-safe {
+            border-left-color: #10b981;
+        }
+
+        .history-alert-item.border-warning {
+            border-left-color: #f59e0b;
+        }
+
+        .history-alert-item.border-danger {
+            border-left-color: #ef4444;
+        }
+
+        .history-scroll {
+            max-height: 350px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+
+        .history-scroll::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .history-scroll::-webkit-scrollbar-track {
+            background: rgba(100, 116, 139, 0.05);
+            border-radius: 10px;
+        }
+
+        .history-scroll::-webkit-scrollbar-thumb {
+            background: rgba(100, 116, 139, 0.2);
+            border-radius: 10px;
+        }
+
+        .history-scroll::-webkit-scrollbar-thumb:hover {
+            background: rgba(100, 116, 139, 0.3);
+        }
+
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 4px 12px 4px;
+            border-bottom: 2px solid rgba(100, 116, 139, 0.08);
+            margin-bottom: 12px;
+        }
+
+        .history-header span {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--gray);
+            opacity: 0.7;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .mobile-menu-toggle {
+            display: none;
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 1100;
+            background: var(--card-bg);
+            border: none;
+            font-size: 1.8rem;
+            padding: 10px;
+            border-radius: 24px;
+            box-shadow: var(--shadow-md);
+        }
+
+        @media (max-width: 1300px) {
+            .dashboard-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 950px) {
+            .sidebar {
+                transform: translateX(-100%);
+            }
+            .sidebar.open {
+                transform: translateX(0);
+            }
+            .main-content {
+                margin-left: 0;
+                padding: 16px;
+            }
+            .mobile-menu-toggle {
+                display: block;
+            }
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.8rem;
+        }
+        @media (max-width: 760px) { .grid-2 { grid-template-columns: 1fr; } }
+
+        input, select {
+            background: rgba(255,255,240,0.9);
+            border: 1px solid #cbd5e1;
+            border-radius: 20px;
+            padding: 10px 14px;
+        }
+        button {
+            cursor: pointer;
+        }
+        .flex-between { display: flex; justify-content: space-between; align-items: center; }
+        .text-success { color: #10b981; font-weight: 700; }
+        .text-danger { color: #ef4444; font-weight: 700; }
+        .text-accent { color: #f97316; }
+        .trigger-list {
+            max-height: 320px;
+            overflow-y: auto;
+        }
+        .trigger-item {
+            background: rgba(59,130,246,0.05);
+            border-radius: 20px;
+            padding: 14px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-left: 4px solid var(--primary-light);
+        }
+        .card-header {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            color: var(--dark);
+        }
+        body.dark .card-header {
+            color: #e2e8f0;
+        }
+        .mt-2 { margin-top: 8px; } .mb-4 { margin-bottom: 24px; }
+
+        .empty-state {
+            text-align: center;
+            padding: 30px 20px;
+            color: var(--gray);
+        }
+        .empty-state i {
+            font-size: 32px;
+            opacity: 0.3;
+            margin-bottom: 10px;
+            display: block;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <button class="mobile-menu-toggle" id="mobileMenuToggle"><i class="fas fa-bars"></i></button>
+    <div class="app-container">
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="brand-text">
+                    <div class="brand-name">TREMOR</div>
+                    <div class="brand-sub">Smart Environment</div>
+                </div>
+            </div>
+            <div class="sidebar-menu">
+                <div class="menu-section">Main</div>
+                <button class="menu-item active" data-page="dashboard"><i class="fas fa-chart-line"></i><span>Live Metrics</span></button>
+                
+                <div class="menu-section">Intelligence</div>
+                <button class="menu-item" data-page="trigger-history"><i class="fas fa-history"></i><span>Trigger Action History</span></button>
+                <button class="menu-item" data-page="reports"><i class="fas fa-chart-pie"></i><span>Analytics Hub</span></button>
+                
+                <div class="menu-section">Controls</div>
+                <button class="menu-item" data-page="threshold"><i class="fas fa-sliders-h"></i><span>Thresholds</span></button>
+                
+                <div class="menu-section">Data</div>
+                <button class="menu-item" data-page="export"><i class="fas fa-database"></i><span>Export CSV</span></button>
+                <button class="menu-item" data-page="logs"><i class="fas fa-scroll"></i><span>System Logs</span></button>
+                <button class="menu-item" data-page="docs"><i class="fas fa-graduation-cap"></i><span>Documentation</span></button>
+                
+                <div class="menu-section" style="margin-top: 20px;">Integrations</div>
+                <a href="http://192.168.18.233:8080/" target="_blank" rel="noopener noreferrer" class="menu-item zabbix-link">
+                    <i class="fas fa-chart-network"></i>
+                    <span>Zabbix Monitoring</span>
+                    <i class="fas fa-external-link-alt" style="font-size: 10px; margin-left: auto;"></i>
+                </a>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="top-bar">
+                <div class="page-title"><h1 id="pageTitle">🌊 Environmental Core</h1><p id="pageSubtitle">real‑time temperature & humidity | smart triggers</p></div>
+                <div class="top-bar-actions">
+                    <div class="action-btn" id="realtimeClock"><i class="far fa-clock"></i><span id="clockDisplay">--:--:--</span></div>
+                    <div class="action-btn"><span id="dateDisplay">--</span></div>
+                    <div class="action-btn"><span id="systemStatus" style="color: #10b981;"><i class="fas fa-circle" style="color: #10b981;"></i> Active</span></div>
+                    <button class="action-btn" id="themeToggle"><i class="fas fa-moon"></i><span>Dark</span></button>
+                    <button class="action-btn" id="logoutBtn"><i class="fas fa-sign-out-alt"></i><span>Exit</span></button>
+                    <form id="logoutForm" method="POST" action="{% url 'logout' %}" style="display:none;">{% csrf_token %}</form>
+                </div>
+            </div>
+            <div class="content-area">
+                <!-- DASHBOARD PAGE -->
+                <div id="dashboardPage" class="page active">
+                    <!-- GAUGE CARDS -->
+                    <div class="dashboard-grid">
+                        <!-- Temperature Gauge -->
+                        <div class="card">
+                            <div class="card-header">
+                                <i class="fas fa-thermometer-half" style="color: #f87171;"></i>
+                                <strong>Temperature</strong>
+                            </div>
+                            <div class="gauge-container">
+                                <div class="gauge-wrapper">
+                                    <svg class="gauge-svg" viewBox="0 0 150 150">
+                                        <circle class="gauge-bg" cx="75" cy="75" r="63" />
+                                        <circle class="gauge-fill temperature" id="tempGaugeFill" cx="75" cy="75" r="63" 
+                                            stroke-dasharray="395.84" stroke-dashoffset="395.84" />
+                                    </svg>
+                                    <div class="gauge-value temperature" id="currentValue">--<span class="gauge-unit">°C</span></div>
+                                </div>
+                                <div class="gauge-status normal" id="statusMessage">Waiting...</div>
+                                <div class="metric-grid">
+                                    <div class="metric-card">
+                                        <div class="label">Average</div>
+                                        <div class="value success" id="avgValue">--</div>
+                                    </div>
+                                    <div class="metric-card">
+                                        <div class="label">Peak</div>
+                                        <div class="value danger" id="maxValue">--</div>
+                                    </div>
+                                    <div class="metric-card">
+                                        <div class="label">Lowest</div>
+                                        <div class="value accent" id="minValue">--</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Humidity Gauge -->
+                        <div class="card">
+                            <div class="card-header">
+                                <i class="fas fa-tint" style="color: #0ea5e9;"></i>
+                                <strong>Humidity</strong>
+                            </div>
+                            <div class="gauge-container">
+                                <div class="gauge-wrapper">
+                                    <svg class="gauge-svg" viewBox="0 0 150 150">
+                                        <circle class="gauge-bg" cx="75" cy="75" r="63" />
+                                        <circle class="gauge-fill humidity" id="humGaugeFill" cx="75" cy="75" r="63" 
+                                            stroke-dasharray="395.84" stroke-dashoffset="395.84" />
+                                    </svg>
+                                    <div class="gauge-value humidity" id="currentHumidity">--<span class="gauge-unit">%</span></div>
+                                </div>
+                                <div class="gauge-status normal" id="humidityStatusMessage">Waiting...</div>
+                                <div class="metric-grid">
+                                    <div class="metric-card">
+                                        <div class="label">Average</div>
+                                        <div class="value success" id="avgHumidity">--</div>
+                                    </div>
+                                    <div class="metric-card">
+                                        <div class="label">Peak</div>
+                                        <div class="value danger" id="maxHumidity">--</div>
+                                    </div>
+                                    <div class="metric-card">
+                                        <div class="label">Lowest</div>
+                                        <div class="value accent" id="minHumidity">--</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- System Status -->
+                        <div class="card">
+                            <div class="card-header">
+                                <i class="fas fa-shield-alt" style="color: var(--primary-light);"></i>
+                                <strong>System Integrity</strong>
+                            </div>
+                            <div style="padding: 8px 0;">
+                                <div class="flex-between" style="padding: 10px 0; border-bottom: 1px solid rgba(100,116,139,0.08);">
+                                    <span style="color: var(--gray);">Health</span>
+                                    <span id="statusText" style="font-weight: 600; color: #10b981;">
+                                        <span class="status-dot safe" style="display: inline-block; margin-right: 6px;"></span> Active
+                                    </span>
+                                </div>
+                                <div class="flex-between" style="padding: 10px 0; border-bottom: 1px solid rgba(100,116,139,0.08);">
+                                    <span style="color: var(--gray);">Last Update</span>
+                                    <span id="updateTime" style="font-weight: 500;">--:--:--</span>
+                                </div>
+                                <div class="flex-between" style="padding: 10px 0;">
+                                    <span style="color: var(--gray);">Thresholds</span>
+                                    <span id="warningThreshold" style="font-weight: 500; font-size: 12px;">15-30°C · 30-75%</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Quick Actions -->
+                        <div class="card">
+                            <div class="card-header">
+                                <i class="fas fa-bolt" style="color: #f59e0b;"></i>
+                                <strong>Quick Actions</strong>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 10px; padding: 8px 0;">
+                                <button class="action-btn" onclick="location.reload()" style="width: 100%; justify-content: center; background: rgba(59,130,246,0.08); border-color: rgba(59,130,246,0.15);">
+                                    <i class="fas fa-sync-alt"></i> Refresh Data
+                                </button>
+                                <button class="action-btn" onclick="alert('Test Alert!')" style="width: 100%; justify-content: center; background: rgba(239,68,68,0.08); border-color: rgba(239,68,68,0.15); color: #ef4444;">
+                                    <i class="fas fa-bell"></i> Test Alert
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- CHARTS SECTION -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
+                        <!-- Real-time Series -->
+                        <div class="card" style="margin-bottom: 0;">
+                            <div class="card-header">
+                                <i class="fas fa-waveform" style="color: var(--primary-light);"></i>
+                                <strong>Real-time Series</strong>
+                                <span style="font-size: 11px; font-weight: 400; color: var(--gray); margin-left: auto;">Live</span>
+                            </div>
+                            <div class="chart-container" id="realtimeChart" style="position: relative; height: 280px; width: 150%;"></div>
+                        </div>
+
+                        <!-- Hourly Average -->
+                        <div class="card" style="margin-bottom: 0;">
+                            <div class="card-header">
+                                <i class="fas fa-chart-simple" style="color: var(--primary-light);"></i>
+                                <strong>Hourly Average</strong>
+                                <span style="font-size: 11px; font-weight: 400; color: var(--gray); margin-left: auto;">Last 12 Hours</span>
+                            </div>
+                            <div class="chart-container" style="position: relative; height: 280px; width: 100%;">
+                                <canvas id="trendChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- HISTORY & ALERTS -->
+                    <div class="card">
+                        <div class="card-header">
+                            <i class="fas fa-table-list" style="color: var(--primary-light);"></i>
+                            <strong>History & Alerts</strong>
+                            <span style="font-size: 11px; font-weight: 400; color: var(--gray); margin-left: auto;">Recent Activity</span>
+                        </div>
+                        
+                        <div class="history-header">
+                            <span>Event</span>
+                            <span>Status</span>
+                        </div>
+                        
+                        <div class="history-scroll" id="historyContainer">
+                            <div id="historyAlertsList">
+                                <div class="empty-state">
+                                    <i class="fas fa-inbox"></i>
+                                    <span>No history data yet</span>
+                                </div>
+                            </div>
+                            <!-- Hidden table for compatibility with dashboard.js -->
+                            <table class="data-table" style="display:none;">
+                                <tbody id="historyTable"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TRIGGER ACTION HISTORY PAGE -->
+                <div id="triggerHistoryPage" class="page" style="display:none">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-bell-ring"></i> <strong>Trigger Action History</strong> <span style="font-size:12px; background:#dbeafe; padding:2px 10px; border-radius:30px;">Automation Logs</span></div>
+                        <p style="margin-bottom: 16px; color:var(--gray)">Riwayat pemicu otomatis berdasarkan ambang batas suhu & kelembaban. Setiap kali sistem mendeteksi kondisi WARNING atau DANGER, trigger terekam di sini.</p>
+                        <div id="triggerListContainer" class="trigger-list">
+                            <div class="trigger-item"><div><i class="fas fa-temperature-high"></i> <strong>High Temp Alert</strong><br><span style="font-size:12px;">2025-03-18 14:23:10</span></div><span class="badge badge-danger">DANGER</span></div>
+                            <div class="trigger-item"><div><i class="fas fa-tint"></i> <strong>Humidity Warning</strong><br><span style="font-size:12px;">2025-03-18 11:05:22</span></div><span class="badge badge-warning">WARNING</span></div>
+                            <div class="trigger-item"><div><i class="fas fa-fan"></i> <strong>Ventilation Trigger</strong><br><span style="font-size:12px;">2025-03-18 09:47:01</span></div><span class="badge badge-safe">ACTION</span></div>
+                        </div>
+                        <button class="action-btn" style="margin-top:16px; width:100%;" onclick="addMockTrigger()"><i class="fas fa-plus-circle"></i> Simulate New Trigger</button>
+                    </div>
+                </div>
+
+                <!-- REPORTS & ANALYTICS -->
+                <div id="reportsPage" class="page" style="display:none"><div class="card"><h3>📈 Statistical Analytics</h3><div id="analyticsStats" style="background:#f8fafc; border-radius:20px; padding:20px;">Mean Temp: 24.2 °C | Peak: 32.1°C | StdDev: 2.3</div></div></div>
+                <div id="thresholdPage" class="page" style="display:none"><div class="card"><h3>⚙️ Threshold Configuration</h3><div style="display:flex; gap:16px; flex-wrap:wrap;"><div>Temp Warning: <input type="number" id="tempWarnLow" value="15"> - <input id="tempWarnHigh" value="30"></div><div>Humidity Warning: <input type="number" id="humWarnLow" value="30"> - <input id="humWarnHigh" value="75"></div></div><button class="action-btn" style="margin-top:20px;" onclick="saveThresholds()">Apply Thresholds</button></div></div>
+                <div id="exportPage" class="page" style="display:none"><div class="card"><h3>📥 Export Data Core</h3><button class="action-btn" onclick="downloadCSV()"><i class="fas fa-download"></i> Download CSV (All)</button></div></div>
+                <div id="logsPage" class="page" style="display:none"><div class="card"><h3>📜 System Events Log</h3><div id="logsList">[INFO] System online | [INFO] Thresholds loaded | [WARN] High humidity at 14:20</div></div></div>
+                <div id="docsPage" class="page" style="display:none"><div class="card"><h3>📘 Documentation</h3><p>Smart monitoring with real-time triggers. When temperature or humidity exceeds thresholds, an action history entry is created. Use Trigger Action History to audit automation events.</p><p style="margin-top:12px;"><strong>🔗 Zabbix Integration:</strong> Akses dashboard Zabbix melalui tombol di sidebar untuk monitoring infrastruktur dan network.</p></div></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================
+        // GAUGE FUNCTIONS
+        // ============================================
+        const GAUGE_CIRCUMFERENCE = 395.84; // 2 * PI * 63
+        
+        function updateGauge(elementId, value, minVal, maxVal) {
+            const gauge = document.getElementById(elementId);
+            if (!gauge) return;
+            
+            const clampedValue = Math.min(Math.max(value, minVal), maxVal);
+            const percentage = (clampedValue - minVal) / (maxVal - minVal);
+            const offset = GAUGE_CIRCUMFERENCE * (1 - percentage);
+            gauge.style.strokeDashoffset = offset;
+        }
+
+        function updateGaugeStatus(elementId, status) {
+            const statusEl = document.getElementById(elementId);
+            if (!statusEl) return;
+            
+            statusEl.className = 'gauge-status';
+            if (status === 'normal') {
+                statusEl.classList.add('normal');
+                statusEl.textContent = 'Normal';
+            } else if (status === 'warning') {
+                statusEl.classList.add('warning');
+                statusEl.textContent = 'Warning';
+            } else if (status === 'danger') {
+                statusEl.classList.add('danger');
+                statusEl.textContent = 'Critical';
+            } else {
+                statusEl.classList.add('normal');
+                statusEl.textContent = '--';
+            }
+        }
+
+        // ============================================
+        // HISTORY ALERT FUNCTIONS
+        // ============================================
+        function addHistoryAlertItem(type, value, time, status) {
+            const container = document.getElementById('historyAlertsList');
+            if (!container) return;
+            
+            const emptyState = container.querySelector('.empty-state');
+            if (emptyState) emptyState.remove();
+            
+            const statusMap = {
+                'normal': { class: 'safe', icon: 'fa-check-circle', label: 'Normal' },
+                'warning': { class: 'warning', icon: 'fa-exclamation-circle', label: 'Warning' },
+                'danger': { class: 'danger', icon: 'fa-exclamation-triangle', label: 'Critical' }
+            };
+            
+            const statusInfo = statusMap[status] || statusMap['normal'];
+            const icon = type === 'temperature' ? 'fa-thermometer-half' : 'fa-tint';
+            const unit = type === 'temperature' ? '°C' : '%';
+            const label = type === 'temperature' ? 'Temperature' : 'Humidity';
+            
+            const item = document.createElement('div');
+            item.className = `history-alert-item border-${statusInfo.class}`;
+            item.innerHTML = `
+                <div class="alert-left">
+                    <div class="alert-icon ${statusInfo.class}">
+                        <i class="fas ${icon}"></i>
+                    </div>
+                    <div class="alert-details">
+                        <div class="alert-value">${label}: ${typeof value === 'number' ? value.toFixed(1) : value}${unit}</div>
+                        <div class="alert-time">
+                            <i class="far fa-clock"></i> ${time || new Date().toLocaleString()}
+                        </div>
+                    </div>
+                </div>
+                <span class="alert-badge ${statusInfo.class}">${statusInfo.label}</span>
+            `;
+            
+            container.insertBefore(item, container.firstChild);
+            
+            while (container.children.length > 20) {
+                container.removeChild(container.lastChild);
+            }
+        }
+
+        // ============================================
+        // STATISTICS FUNCTIONS (Avg, Min, Max)
+        // ============================================
+        let temperatureHistory = [];
+        let humidityHistory = [];
+        const MAX_HISTORY = 100;
+
+        function updateStatistics(temp, humidity) {
+            // Add to history
+            if (temp !== undefined && !isNaN(temp)) {
+                temperatureHistory.push(temp);
+                if (temperatureHistory.length > MAX_HISTORY) {
+                    temperatureHistory.shift();
+                }
+            }
+            
+            if (humidity !== undefined && !isNaN(humidity)) {
+                humidityHistory.push(humidity);
+                if (humidityHistory.length > MAX_HISTORY) {
+                    humidityHistory.shift();
+                }
+            }
+            
+            // Calculate temperature statistics
+            if (temperatureHistory.length > 0) {
+                const avg = temperatureHistory.reduce((a, b) => a + b, 0) / temperatureHistory.length;
+                const max = Math.max(...temperatureHistory);
+                const min = Math.min(...temperatureHistory);
+                
+                document.getElementById('avgValue').textContent = avg.toFixed(1) + '°C';
+                document.getElementById('maxValue').textContent = max.toFixed(1) + '°C';
+                document.getElementById('minValue').textContent = min.toFixed(1) + '°C';
+            }
+            
+            // Calculate humidity statistics
+            if (humidityHistory.length > 0) {
+                const avg = humidityHistory.reduce((a, b) => a + b, 0) / humidityHistory.length;
+                const max = Math.max(...humidityHistory);
+                const min = Math.min(...humidityHistory);
+                
+                document.getElementById('avgHumidity').textContent = avg.toFixed(1) + '%';
+                document.getElementById('maxHumidity').textContent = max.toFixed(1) + '%';
+                document.getElementById('minHumidity').textContent = min.toFixed(1) + '%';
+            }
+        }
+
+        // ============================================
+        // HOOK INTO DASHBOARD.JS
+        // ============================================
+        
+        window.addEventListener('load', function() {
+            setTimeout(function() {
+                // Override the handleSensorData function
+                if (typeof handleSensorData === 'function') {
+                    const originalHandleSensorData = handleSensorData;
+                    handleSensorData = function(data) {
+                        // Call original function
+                        originalHandleSensorData(data);
+                        
+                        // Update gauges
+                        if (data.temperature !== undefined && !isNaN(data.temperature)) {
+                            // Update gauge (range 0-50°C)
+                            updateGauge('tempGaugeFill', data.temperature, 0, 50);
+                            
+                            let tempStatus = 'normal';
+                            if (data.temp_status) {
+                                tempStatus = data.temp_status;
+                            } else {
+                                if (data.temperature < 15 || data.temperature > 30) tempStatus = 'warning';
+                                if (data.temperature < 10 || data.temperature > 35) tempStatus = 'danger';
+                            }
+                            updateGaugeStatus('statusMessage', tempStatus);
+                            
+                            // Update current value display with unit
+                            const currentVal = document.getElementById('currentValue');
+                            if (currentVal) {
+                                currentVal.innerHTML = data.temperature.toFixed(1) + '<span class="gauge-unit">°C</span>';
+                            }
+                        }
+                        
+                        if (data.humidity !== undefined && !isNaN(data.humidity)) {
+                            // Update gauge (range 0-100%)
+                            updateGauge('humGaugeFill', data.humidity, 0, 100);
+                            
+                            let humStatus = 'normal';
+                            if (data.humidity_status) {
+                                humStatus = data.humidity_status;
+                            } else {
+                                if (data.humidity < 30 || data.humidity > 75) humStatus = 'warning';
+                                if (data.humidity < 20 || data.humidity > 85) humStatus = 'danger';
+                            }
+                            updateGaugeStatus('humidityStatusMessage', humStatus);
+                            
+                            // Update current value display with unit
+                            const currentHum = document.getElementById('currentHumidity');
+                            if (currentHum) {
+                                currentHum.innerHTML = data.humidity.toFixed(1) + '<span class="gauge-unit">%</span>';
+                            }
+                        }
+                        
+                        // Update statistics (Avg, Min, Max)
+                        updateStatistics(data.temperature, data.humidity);
+                        
+                        // Add to history
+                        if (data.temperature !== undefined && !isNaN(data.temperature)) {
+                            let status = 'normal';
+                            if (data.temp_status) {
+                                status = data.temp_status;
+                            } else {
+                                if (data.temperature < 15 || data.temperature > 30) status = 'warning';
+                                if (data.temperature < 10 || data.temperature > 35) status = 'danger';
+                            }
+                            addHistoryAlertItem(
+                                'temperature',
+                                data.temperature,
+                                data.timestamp ? new Date(data.timestamp).toLocaleString() : new Date().toLocaleString(),
+                                status
+                            );
+                        }
+                    };
+                    console.log('✅ Dashboard hooks installed successfully');
+                }
+            }, 500);
+        });
+
+        // ============================================
+        // PAGE ROUTING
+        // ============================================
+        const pages = ['dashboardPage', 'triggerHistoryPage', 'reportsPage', 'thresholdPage', 'exportPage', 'logsPage', 'docsPage'];
+        function showPage(pageId) {
+            pages.forEach(p => { const el = document.getElementById(p); if(el) el.style.display = 'none'; });
+            document.getElementById(pageId).style.display = 'block';
+            document.querySelectorAll('.menu-item').forEach(btn => btn.classList.remove('active'));
+            let mapping = { dashboard:'dashboardPage', 'trigger-history':'triggerHistoryPage', reports:'reportsPage', threshold:'thresholdPage', export:'exportPage', logs:'logsPage', docs:'docsPage' };
+            let pageKey = Object.keys(mapping).find(k => mapping[k] === pageId);
+            if(pageKey) document.querySelector(`[data-page="${pageKey}"]`)?.classList.add('active');
+            let titles = { dashboardPage:'🌊 Environmental Core', triggerHistoryPage:'⚡ Trigger Action Logs', reportsPage:'📊 Analytics Hub', thresholdPage:'🎚️ Threshold Studio', exportPage:'💾 Data Export', logsPage:'📋 System Logs', docsPage:'📖 User Guide' };
+            document.getElementById('pageTitle').innerHTML = titles[pageId] || 'TREMOR';
+        }
+
+        document.querySelectorAll('.menu-item:not(.zabbix-link)').forEach(btn => {
+            btn.addEventListener('click', () => {
+                let page = btn.getAttribute('data-page');
+                if(page === 'dashboard') showPage('dashboardPage');
+                if(page === 'trigger-history') showPage('triggerHistoryPage');
+                if(page === 'reports') showPage('reportsPage');
+                if(page === 'threshold') showPage('thresholdPage');
+                if(page === 'export') showPage('exportPage');
+                if(page === 'logs') showPage('logsPage');
+                if(page === 'docs') showPage('docsPage');
+                if(window.innerWidth < 950) document.getElementById('sidebar').classList.remove('open');
+            });
+        });
+
+        // Mobile menu toggle
+        document.getElementById('mobileMenuToggle').addEventListener('click', function() {
+            document.getElementById('sidebar').classList.toggle('open');
+        });
+    </script>
+
+    <!-- Realtime logic -->
+    <script src="{% static 'js/dashboard.js' %}"></script>
+</body>
+</html>

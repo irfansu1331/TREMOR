@@ -1,0 +1,2683 @@
+// Global State Management
+const state = {
+    currentData: [],
+    hourlyData: {},
+    notifications: [],
+    locations: [
+        { id: 1, name: "Ruangan Monitoring", description: "Ruangan Monitoring Utama", status: "online", lastUpdate: Date.now() }
+    ],
+    thresholds: {
+        temperature: { warning_low: 15, warning_high: 30, danger_low: 10, danger_high: 35 },
+        humidity: { warning_low: 30, warning_high: 75, danger_low: 20, danger_high: 85 }
+    },
+    theme: 'light',
+    mqttConnected: false,
+    apiConnected: false,
+    lastSensorUpdate: Date.now(),
+    sensorTimeout: 45000  // 45 seconds - consider inactive if no data received
+};
+
+// Charts storage
+let charts = {
+    realtime: null,
+    trend: null
+};
+
+// ============================================
+// INITIALIZATION
+// ============================================
+
+// Update realtime clock display
+function updateClock() {
+    const now = new Date();
+    
+    // Format time HH:MM:SS
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const seconds = String(now.getSeconds()).padStart(2, '0');
+    
+    // Format date DD-MonthName-YYYY (Indonesian month names)
+    const monthNames = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 
+                        'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+    const date = String(now.getDate()).padStart(2, '0');
+    const month = monthNames[now.getMonth()];
+    const year = now.getFullYear();
+    
+    const clockDisplay = document.getElementById('clockDisplay');
+    const dateDisplay = document.getElementById('dateDisplay');
+    
+    if (clockDisplay) {
+        clockDisplay.textContent = `${hours}:${minutes}:${seconds}`;
+    }
+    if (dateDisplay) {
+        dateDisplay.textContent = `${date}-${month}-${year}`;
+    }
+}
+
+function initDashboard() {
+    console.log('Initializing dashboard...');
+    setupEventListeners();
+    setupCharts();
+    setupExportTypeButtons();
+    loadThresholdSettings();
+    updateLocationsList();
+    updateDevicesStatus();
+    
+    // Request browser notification permission untuk anomaly alerts
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+    
+    // Start realtime clock
+    updateClock();
+    setInterval(updateClock, 1000);
+    
+    // Load initial history data (all data, max 50 rows)
+    updateHistoryTableWithFilter('all');
+    
+    // Start polling for latest sensor data every 3 seconds
+    console.log('Starting API polling...');
+    pollSensorData();
+    setInterval(pollSensorData, 3000);
+    
+    // Update history table every 5 seconds with current filter selection (preserve scroll position)
+    setInterval(() => {
+        const activeFilterBtn = document.querySelector('.data-filter .action-btn.active');
+        if (activeFilterBtn) {
+            const filterType = activeFilterBtn.getAttribute('data-filter-type');
+            updateHistoryTableWithFilter(filterType);
+        }
+    }, 5000);
+    
+    // Check sensor connection status frequently (every 3 seconds)
+    checkSensorConnectionStatus();
+    setInterval(checkSensorConnectionStatus, 3000);
+}
+
+// ============================================
+// EVENT LISTENERS SETUP
+// ============================================
+
+function setupEventListeners() {
+    // Theme Toggle
+    const themeToggle = document.getElementById('themeToggle');
+    if (themeToggle) {
+        themeToggle.addEventListener('click', toggleTheme);
+    }
+    
+    // Menu Navigation
+    document.querySelectorAll('.menu-item').forEach(item => {
+        item.addEventListener('click', function() {
+            const page = this.getAttribute('data-page');
+            switchPage(page);
+            
+            if (window.innerWidth <= 1024) {
+                document.getElementById('sidebar').classList.remove('active');
+            }
+        });
+    });
+    
+    // Time Filter
+    const timeFilterBtns = document.querySelectorAll('.time-filter .action-btn');
+    console.log(`Found ${timeFilterBtns.length} time filter buttons`);
+    
+    // Data Filter (Semua Data / Danger Only)
+    const dataFilterBtns = document.querySelectorAll('.data-filter .action-btn');
+    console.log(`Found ${dataFilterBtns.length} data filter buttons`);
+    
+    dataFilterBtns.forEach(btn => {
+        btn.addEventListener('click', function() {
+            const filterType = this.getAttribute('data-filter-type');
+            console.log(`Data filter button clicked: ${filterType}`);
+            document.querySelectorAll('.data-filter .action-btn').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            
+            // Update table with filter
+            updateHistoryTableWithFilter(filterType);
+        });
+    });
+    
+    // Mobile Menu Toggle
+    const mobileMenuToggle = document.getElementById('mobileMenuToggle');
+    if (mobileMenuToggle) {
+        mobileMenuToggle.addEventListener('click', function() {
+            document.getElementById('sidebar').classList.toggle('active');
+        });
+    }
+    
+    // Logout Button Handler
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', function() {
+            if (confirm('Apakah Anda yakin ingin logout?')) {
+                document.getElementById('logoutForm').submit();
+            }
+        });
+    }
+    
+    // Close sidebar when clicking outside on mobile
+    document.addEventListener('click', function(event) {
+        const sidebar = document.getElementById('sidebar');
+        const mobileToggle = document.getElementById('mobileMenuToggle');
+        
+        if (window.innerWidth <= 1024 && 
+            !sidebar.contains(event.target) && 
+            !mobileToggle.contains(event.target) &&
+            sidebar.classList.contains('active')) {
+            sidebar.classList.remove('active');
+        }
+    });
+}
+
+// ============================================
+// SENSOR DATA HANDLING
+// ============================================
+
+// Poll sensor data from API every 3 seconds
+function pollSensorData() {
+    console.log('pollSensorData() calling /api/latest/');
+    fetch('/api/latest/', { credentials: 'same-origin' })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`API error: ${response.status}`);
+            }
+            const contentType = response.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                throw new Error('API returned non-JSON response (session may have expired)');
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('API Response:', data);
+            if (data && data.temperature !== undefined && data.humidity !== undefined) {
+                // Map API response to sensor data format
+                const sensorData = {
+                    temperature: data.temperature,
+                    humidity: data.humidity,
+                    temp_status: data.temp_status,
+                    humidity_status: data.humidity_status,
+                    location: data.location,
+                    timestamp: new Date(data.timestamp).getTime()
+                };
+                handleSensorData(sensorData);
+                updateConnectionStatus('connected');
+            }
+        })
+        .catch(error => {
+            console.error('API polling error:', error);
+            updateConnectionStatus('disconnected');
+        });
+}
+
+// Update connection status indicator
+function checkSensorConnectionStatus() {
+    console.log('checkSensorConnectionStatus() calling /api/sensor-status/');
+    fetch('/api/sensor-status/', { credentials: 'same-origin' })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`Sensor status error: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Sensor Status:', data);
+            const isActive = data.is_connected === true;
+            
+            // Update system status based on sensor data freshness
+            const systemStatusEl = document.getElementById('systemStatus');
+            if (systemStatusEl) {
+                if (isActive) {
+                    systemStatusEl.innerHTML = '<i class="fas fa-circle" style="color: #10b981; font-size: 8px; margin-right: 6px;"></i>Aktif';
+                    systemStatusEl.style.color = '#10b981';  // Green
+                } else {
+                    systemStatusEl.innerHTML = '<i class="fas fa-circle" style="color: #ef4444; font-size: 8px; margin-right: 6px;"></i>Tidak Aktif';
+                    systemStatusEl.style.color = '#ef4444';  // Red
+                }
+            }
+            
+            // Update status dot
+            const statusDot = document.getElementById('statusDot');
+            if (statusDot) {
+                statusDot.className = `status-dot ${isActive ? 'safe' : 'danger'}`;
+            }
+            
+            // Console log untuk debug
+            const seconds = data.seconds_since_last_reading ?? '?';
+            console.log(`Sensor ${isActive ? 'active' : 'inactive'}: last reading ${seconds}s ago`);
+        })
+        .catch(error => {
+            console.error('Sensor status check error:', error);
+            // Mark as inactive if we can't reach the endpoint
+            const systemStatusEl = document.getElementById('systemStatus');
+            if (systemStatusEl) {
+                systemStatusEl.innerHTML = '<i class="fas fa-circle" style="color: #ef4444; font-size: 8px; margin-right: 6px;"></i>Tidak Aktif';
+                systemStatusEl.style.color = '#ef4444';
+            }
+        });
+}
+
+// Update connection status indicator
+function updateConnectionStatus(status) {
+    const statusIndicator = document.getElementById('statusIndicator');
+    const statusText = document.getElementById('statusText');
+    const statusDot = document.getElementById('statusDot');
+    
+    if (statusIndicator) {
+        statusIndicator.textContent = status === 'connected' ? '✅ Connected' : '⚠️ Disconnected';
+    }
+    
+    if (statusText) {
+        statusText.textContent = status === 'connected' ? 'Connected' : 'Disconnected';
+    }
+    
+    if (statusDot) {
+        statusDot.className = `status-dot ${status}`;
+    }
+}
+
+function handleSensorData(data) {
+    console.log('Processing sensor data:', data);
+    
+    // Update last sensor update time
+    state.lastSensorUpdate = Date.now();
+    
+    // Validate and extract temperature and humidity
+    const temperature = parseFloat(data.temperature);
+    const humidity = parseFloat(data.humidity);
+    
+    if (isNaN(temperature) || isNaN(humidity)) {
+        console.error('Invalid sensor values:', data);
+        return;
+    }
+    
+    // Create reading object
+    const reading = {
+        timestamp: data.timestamp || Date.now(),
+        temperature: parseFloat(temperature.toFixed(2)),
+        humidity: parseFloat(humidity.toFixed(2)),
+        temp_status: data.temp_status || getTemperatureStatus(temperature),
+        humidity_status: data.humidity_status || getHumidityStatus(humidity),
+        location: data.location || 'Ruangan Monitoring',
+        source: data.source || 'MQTT'
+    };
+    
+    // Add to data array (keep last 200 readings)
+    state.currentData.push(reading);
+    if (state.currentData.length > 200) {
+        state.currentData.shift();
+    }
+    
+    console.log(`New reading: Temp=${reading.temperature}°C (${reading.temp_status}), Humidity=${reading.humidity}% (${reading.humidity_status})`);
+    
+    // Check for threshold breach and add notification
+    checkThresholdBreach(reading);
+    
+    // Update dashboard
+    updateDashboard();
+}
+
+// Get temperature status
+function getTemperatureStatus(temperature) {
+    const t = state.thresholds.temperature;
+    if (temperature <= t.danger_low || temperature >= t.danger_high) return 'danger';
+    if (temperature < t.warning_low || temperature > t.warning_high) return 'warning';
+    return 'normal';
+}
+
+// Get humidity status
+function getHumidityStatus(humidity) {
+    const h = state.thresholds.humidity;
+    if (humidity <= h.danger_low || humidity >= h.danger_high) return 'danger';
+    if (humidity < h.warning_low || humidity > h.warning_high) return 'warning';
+    return 'normal';
+}
+
+// Get status based on value
+function getStatus(value) {
+    if (value >= state.thresholds.danger) return 'danger';
+    if (value >= state.thresholds.warning) return 'warning';
+    return 'safe';
+}
+
+// ============================================
+// SYSTEM STATUS
+// ============================================
+
+// ============================================
+// STATUS AND METRICS
+// ============================================
+// DASHBOARD UPDATES
+// ============================================
+
+function updateDashboard() {
+    if (state.currentData.length === 0) return;
+    console.log('updateDashboard(), latest=', state.currentData[state.currentData.length-1]);
+    
+    const latest = state.currentData[state.currentData.length - 1];
+    const recentData = state.currentData.slice(-20);
+    
+    // Update current reading
+    updateCurrentReading(latest);
+    
+    // Update statistics
+    updateStatistics(recentData);
+    
+    // Update status indicator
+    updateStatusIndicator(latest);
+    
+    // Update charts
+    updateCharts();
+    
+    // Don't update history table on every poll - causes scroll reset
+    // updateHistoryTable('3hours');
+    
+    // Update AI prediction
+    updateAIPrediction();
+}
+
+function updateCurrentReading(latest) {
+    // Current temperature
+    const currentValueEl = document.getElementById('currentValue');
+    if (currentValueEl) {
+        currentValueEl.textContent = latest.temperature.toFixed(1);
+    }
+    
+    // Current humidity
+    const currentHumidityEl = document.getElementById('currentHumidity');
+    if (currentHumidityEl) {
+        currentHumidityEl.textContent = latest.humidity.toFixed(1);
+    }
+    
+    // Temperature status message
+    const statusMessageEl = document.getElementById('statusMessage');
+    if (statusMessageEl) {
+        const tempStatusText = latest.temp_status === 'normal' ? 'Normal' : 
+                               latest.temp_status === 'warning' ? 'Peringatan' : 
+                               'Bahaya!';
+        statusMessageEl.textContent = `Suhu: ${tempStatusText}`;
+        statusMessageEl.className = `reading-status status-${latest.temp_status}`;
+    }
+
+    const humidityStatusEl = document.getElementById('humidityStatusMessage');
+    if (humidityStatusEl) {
+        const humStatusText = latest.humidity_status === 'normal' ? 'Normal' : 
+                              latest.humidity_status === 'warning' ? 'Peringatan' : 
+                              'Bahaya!';
+        humidityStatusEl.textContent = `Kelembaban: ${humStatusText}`;
+        humidityStatusEl.className = `reading-status status-${latest.humidity_status}`;
+    }
+    
+    // Update time
+    const updateTimeEl = document.getElementById('updateTime');
+    if (updateTimeEl) {
+        updateTimeEl.textContent = `Update: ${new Date().toLocaleTimeString('id-ID')}`;
+    }
+}
+
+function updateStatistics(recentData) {
+    const temps = recentData.map(d => d.temperature);
+    const humidities = recentData.map(d => d.humidity);
+    
+    // Temperature statistics
+    const tempAvg = temps.reduce((a, b) => a + b, 0) / temps.length;
+    const tempMax = Math.max(...temps);
+    const tempMin = Math.min(...temps);
+    
+    // Humidity statistics
+    const humAvg = humidities.reduce((a, b) => a + b, 0) / humidities.length;
+    const humMax = Math.max(...humidities);
+    const humMin = Math.min(...humidities);
+    
+    // Temperature Average
+    const avgEl = document.getElementById('avgValue');
+    if (avgEl) avgEl.textContent = tempAvg.toFixed(1);
+    
+    // Temperature Max
+    const maxEl = document.getElementById('maxValue');
+    if (maxEl) maxEl.textContent = tempMax.toFixed(1);
+    
+    // Temperature Min
+    const minEl = document.getElementById('minValue');
+    if (minEl) minEl.textContent = tempMin.toFixed(1);
+}
+
+function updateStatusIndicator(latest) {
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+
+    // Untuk DHT22: gabungkan temp_status & humidity_status
+    const tempState = latest.temp_status || 'normal';
+    const humState = latest.humidity_status || 'normal';
+    let systemState = 'normal';
+    if (tempState === 'danger' || humState === 'danger') systemState = 'danger';
+    else if (tempState === 'warning' || humState === 'warning') systemState = 'warning';
+
+    if (statusDot) {
+        statusDot.className = `status-dot ${systemState}`;
+    }
+
+    if (statusText) {
+        statusText.textContent = systemState === 'normal' ? 'NORMAL' :
+                                systemState === 'warning' ? 'WASPADA' : 'BAHAYA';
+    }
+
+    // Update threshold displays (DHT22 pakai temperature/humidity, bukan ppm)
+    const warningThresholdEl = document.getElementById('warningThreshold');
+    const dangerThresholdEl = document.getElementById('dangerThreshold');
+
+    if (warningThresholdEl) {
+        warningThresholdEl.textContent = `${state.thresholds.temperature.warning_low}-${state.thresholds.temperature.warning_high} °C`;
+    }
+
+    if (dangerThresholdEl) {
+        dangerThresholdEl.textContent = `${state.thresholds.temperature.danger_low}-${state.thresholds.temperature.danger_high} °C`;
+    }
+}
+
+// ============================================
+// AI PREDICTION
+// ============================================
+
+function updateAIPrediction() {
+    // AI prediction di UI ini awalnya khusus ammonia (field: d.value). Untuk DHT22, nonaktifkan agar tidak error/stuck.
+    // Kalau Anda nanti punya model prediksi suhu/kelembaban, fungsi ini bisa diimplementasi ulang.
+    const container = document.getElementById('forecastContainer');
+    if (!container) return;
+    // Tidak mengubah AI container di dashboard utama.
+}
+
+// ============================================
+// CHARTS
+// ============================================
+
+function setupCharts() {
+    // Real-time Chart
+    const realtimeCtx = document.getElementById('realtimeChart');
+    if (realtimeCtx) {
+        charts.realtime = new Chart(realtimeCtx.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Suhu (°C)',
+                        data: [],
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        borderWidth: 3,
+                        fill: true,
+                        tension: 0.4,
+                        pointBackgroundColor: '#3b82f6',
+                        pointBorderColor: '#ffffff',
+                        pointBorderWidth: 2,
+                        pointRadius: 4,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Kelembaban (%)',
+                        data: [],
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        borderWidth: 3,
+                        fill: true,
+                        tension: 0.4,
+                        pointBackgroundColor: '#10b981',
+                        pointBorderColor: '#ffffff',
+                        pointBorderWidth: 2,
+                        pointRadius: 4,
+                        yAxisID: 'y1'
+                    },
+                    {
+                        label: 'Ambang Warning',
+                        data: [],
+                        borderColor: '#f59e0b',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        fill: false,
+                        pointRadius: 0,
+                        tension: 0
+                    },
+                    {
+                        label: 'Ambang Danger',
+                        data: [],
+                        borderColor: '#ef4444',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        fill: false,
+                        pointRadius: 0,
+                        tension: 0
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        type: 'linear',
+                        position: 'left',
+                        beginAtZero: true,
+                        max: 50,
+                        title: { display: true, text: 'Suhu (°C)' },
+                        grid: { color: 'rgba(0,0,0,0.1)' }
+                    },
+                    y1: {
+                        type: 'linear',
+                        position: 'right',
+                        beginAtZero: true,
+                        max: 100,
+                        title: { display: true, text: 'Kelembaban (%)' },
+                        grid: { drawOnChartArea: false }
+                    },
+                    x: {
+                        grid: { display: false }
+                    }
+                },
+                plugins: {
+                    legend: { 
+                        display: true,
+                        position: 'top'
+                    }
+                }
+            }
+        });
+    }
+    
+    // Trend Chart - Hourly
+    const trendCtx = document.getElementById('trendChart');
+    if (trendCtx) {
+        charts.trend = new Chart(trendCtx.getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Rata-rata',
+                        data: [],
+                        backgroundColor: '#10b981',
+                        borderRadius: 6
+                    },
+                    {
+                        label: 'Tertinggi',
+                        data: [],
+                        backgroundColor: '#ef4444',
+                        borderRadius: 6,
+                        alpha: 0.5
+                    },
+                    {
+                        label: 'Terendah',
+                        data: [],
+                        backgroundColor: '#3b82f6',
+                        borderRadius: 6,
+                        alpha: 0.5
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 400,
+                        grid: { color: 'rgba(0,0,0,0.1)' }
+                    },
+                    x: {
+                        grid: { display: false }
+                    }
+                },
+                plugins: {
+                    legend: { display: true }
+                }
+            }
+        });
+    }
+}
+
+function updateCharts() {
+    if (state.currentData.length === 0) return;
+    
+    const recentData = state.currentData.slice(-20);
+    
+    if (charts.realtime) {
+        // Update real-time chart with data and threshold lines
+        charts.realtime.data.labels = recentData.map(d => 
+            new Date(d.timestamp).toLocaleTimeString('id-ID', {hour: '2-digit', minute: '2-digit'})
+        );
+        charts.realtime.data.datasets[0].data = recentData.map(d => d.temperature);
+        charts.realtime.data.datasets[1].data = recentData.map(d => d.humidity);
+        
+        // Add threshold lines
+        const tempThreshold = state.thresholds.temperature;
+        if (charts.realtime.data.datasets[2]) {
+            charts.realtime.data.datasets[2].data = Array(recentData.length).fill((tempThreshold.warning_low + tempThreshold.warning_high) / 2);
+        }
+        if (charts.realtime.data.datasets[3]) {
+            charts.realtime.data.datasets[3].data = Array(recentData.length).fill((tempThreshold.danger_low + tempThreshold.danger_high) / 2);
+        }
+        
+        charts.realtime.update('none');
+    }
+    
+    // Update hourly trend
+    updateHourlyTrend();
+}
+
+// Calculate hourly statistics
+function updateHourlyTrend() {
+    // Fetch 24 hours of data for trend chart
+    fetch('/api/history/?hours=24')
+        .then(res => res.json())
+        .then(data => {
+            const now = new Date();
+            const hourlyStats = {};
+            const hourlyOrder = []; // Keep track of hour order
+            
+            // Initialize hourly buckets (last 24 hours) in chronological order
+            for (let i = 23; i >= 0; i--) {
+                const hour = new Date(now.getTime() - i * 60 * 60 * 1000);
+                const hourKey = hour.getHours() + ':00';
+                hourlyStats[hourKey] = { values: [], max: 0, min: Infinity, avg: 0 };
+                hourlyOrder.push(hourKey);
+            }
+            
+            // Aggregate data into hourly buckets
+            data.forEach(reading => {
+                const readTime = new Date(reading.timestamp);
+                const hourKey = readTime.getHours() + ':00';
+// Untuk DHT22: gunakan temperature untuk trend (chart sekarang hanya suhu)
+                const value = reading.temperature;
+                
+                if (hourlyStats[hourKey] && !isNaN(value)) {
+                    hourlyStats[hourKey].values.push(value);
+                    hourlyStats[hourKey].max = Math.max(hourlyStats[hourKey].max, value);
+                    hourlyStats[hourKey].min = Math.min(hourlyStats[hourKey].min, value);
+                }
+            });
+            
+            // Calculate averages
+            Object.keys(hourlyStats).forEach(key => {
+                const stat = hourlyStats[key];
+                if (stat.values.length > 0) {
+                    stat.avg = (stat.values.reduce((a, b) => a + b, 0) / stat.values.length).toFixed(1);
+                    if (stat.min === Infinity) stat.min = 0;
+                } else {
+                    stat.min = 0;
+                }
+            });
+            
+            // Update trend chart with proper ordering
+            if (charts.trend) {
+                charts.trend.data.labels = hourlyOrder;
+                charts.trend.data.datasets[0].data = hourlyOrder.map(k => parseFloat(hourlyStats[k].avg || 0));
+                charts.trend.data.datasets[1].data = hourlyOrder.map(k => hourlyStats[k].max);
+                charts.trend.data.datasets[2].data = hourlyOrder.map(k => hourlyStats[k].min);
+                charts.trend.update('none');
+            }
+        })
+        .catch(err => console.error('Error fetching trend data:', err));
+}
+
+// ============================================
+// HISTORY TABLE
+// ============================================
+
+// Wrapper function to handle filter type (all vs danger only)
+// Now displays 50 rows max, no time range parameter needed
+function updateHistoryTableWithFilter(filterType = 'all') {
+    console.log(`updateHistoryTableWithFilter called: filterType=${filterType}`);
+    
+    const tableBody = document.getElementById('historyTable');
+    if (!tableBody) return;
+    
+    const scrollPos = window.scrollY || window.pageYOffset;
+    
+    if (filterType === 'danger') {
+        // Fetch all data and filter for danger only (max 50 rows)
+        fetch(`/api/history/?hours=720`)
+            .then(r => {
+                if (!r.ok) throw new Error(`API Error: ${r.status}`);
+                return r.json();
+            })
+            .then(data => {
+                // Filter only danger and limit to 50 rows
+                const dangerData = data.filter(reading => reading.temp_status === 'danger' || reading.humidity_status === 'danger').slice(0, 50);
+                
+                if (dangerData.length === 0) {
+                    tableBody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px;">Tidak ada alert danger</td></tr>';
+                    window.scrollTo(0, scrollPos);
+                    return;
+                }
+                
+                let html = '';
+                dangerData.forEach(reading => {
+                    const time = new Date(reading.timestamp).toLocaleString('id-ID');
+                    const temp = typeof reading.temperature === 'number' ? reading.temperature.toFixed(2) : '0.0';
+                    const humidity = typeof reading.humidity === 'number' ? reading.humidity.toFixed(2) : '0.0';
+                    const tempBadge = reading.temp_status === 'danger' ? '<span class="badge" style="background-color: #ef4444; color: white;">DANGER</span>' : '<span class="badge" style="background-color: #10b981; color: white;">NORMAL</span>';
+                    const humBadge = reading.humidity_status === 'danger' ? '<span class="badge" style="background-color: #ef4444; color: white;">DANGER</span>' : '<span class="badge" style="background-color: #10b981; color: white;">NORMAL</span>';
+                    const source = reading.source || 'MQTT';
+                    
+                    html += `
+                        <tr style="background-color: rgba(239, 68, 68, 0.1); border-left: 4px solid #ef4444;">
+                            <td style="font-weight: 600;">${time}</td>
+                            <td>${temp}°C</td>
+                            <td>${humidity}%</td>
+                            <td>${tempBadge}</td>
+                            <td>${humBadge}</td>
+                            <td>${source}</td>
+                        </tr>
+                    `;
+                });
+                
+                tableBody.innerHTML = html;
+                window.scrollTo(0, scrollPos);
+            })
+            .catch(error => {
+                console.error('Error loading danger data:', error);
+                tableBody.innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-danger);">Error: ${error.message}</td></tr>`;
+            });
+    } else {
+        // Fetch all data and display 50 rows (max)
+        fetch(`/api/history/?hours=720`)
+            .then(r => {
+                if (!r.ok) throw new Error(`API Error: ${r.status}`);
+                return r.json();
+            })
+            .then(data => {
+                // Limit to 50 rows
+                const displayData = data.slice(0, 50);
+                
+                if (!Array.isArray(displayData) || displayData.length === 0) {
+                    tableBody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px;">Belum ada data tersedia</td></tr>';
+                    window.scrollTo(0, scrollPos);
+                    return;
+                }
+                
+                let html = '';
+                displayData.forEach(reading => {
+                    const time = new Date(reading.timestamp).toLocaleString('id-ID');
+                    const temp = typeof reading.temperature === 'number' ? reading.temperature.toFixed(2) : '0.0';
+                    const humidity = typeof reading.humidity === 'number' ? reading.humidity.toFixed(2) : '0.0';
+                    const tempStatusClass = reading.temp_status === 'danger' ? 'status-danger' : reading.temp_status === 'warning' ? 'status-warning' : 'status-normal';
+                    const humStatusClass = reading.humidity_status === 'danger' ? 'status-danger' : reading.humidity_status === 'warning' ? 'status-warning' : 'status-normal';
+                    const source = reading.source || 'MQTT';
+                    
+                    html += `
+                        <tr>
+                            <td>${time}</td>
+                            <td>${temp}°C</td>
+                            <td>${humidity}%</td>
+                            <td><span class="badge ${tempStatusClass}">${reading.temp_status}</span></td>
+                            <td><span class="badge ${humStatusClass}">${reading.humidity_status}</span></td>
+                            <td>${source}</td>
+                        </tr>
+                    `;
+                });
+                
+                tableBody.innerHTML = html;
+                window.scrollTo(0, scrollPos);
+            })
+            .catch(error => {
+                console.error('Error loading data:', error);
+                tableBody.innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-danger);">Error: ${error.message}</td></tr>`;
+            });
+    }
+}
+
+function updateHistoryTable(range) {
+    console.log(`updateHistoryTable called with range: ${range}`);
+    const tableBody = document.getElementById('historyTable');
+    if (!tableBody) {
+        console.error('historyTable element not found');
+        return;
+    }
+    
+    // Save scroll position before update (use window scroll, not tbody)
+    const scrollPos = window.scrollY || window.pageYOffset;
+    
+    // Determine hours based on range
+    let hours = 3;
+    switch(range) {
+        case '3hours': hours = 3; break;
+        case '1day': hours = 24; break;
+        case '1week': hours = 168; break; // 7 * 24
+        case '1month': hours = 720; break; // 30 * 24
+    }
+    
+    // Fetch data from API (don't update DOM until data is ready)
+    fetch(`/api/history/?hours=${hours}`)
+        .then(r => {
+            if (!r.ok) throw new Error(`API Error: ${r.status}`);
+            return r.json();
+        })
+        .then(data => {
+            console.log(`Loaded ${data.length} records for range: ${range}`);
+            
+            if (!Array.isArray(data) || data.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-light);">Belum ada data tersedia</td></tr>';
+                // Restore scroll position
+                window.scrollTo(0, scrollPos);
+                return;
+            }
+            
+            // Build HTML without showing loading state
+            let html = '';
+            data.slice(0, 25).forEach(reading => {
+                const statusClass = `status-${reading.status}`;
+                const statusText = reading.status ? reading.status.toUpperCase() : 'UNKNOWN';
+                const time = new Date(reading.timestamp).toLocaleString('id-ID');
+                const ppm = typeof reading.ammonia_level === 'number' ? reading.ammonia_level.toFixed(1) : '0.0';
+                
+                html += `
+                    <tr>
+                        <td>${time}</td>
+                        <td>${reading.location || 'Toilet Kampus'}</td>
+                        <td class="font-semibold">${ppm} ppm</td>
+                        <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                        <td><span class="status-badge" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">MQTT</span></td>
+                    </tr>
+                `;
+            });
+            
+            // Update DOM once with complete HTML (no flicker)
+            tableBody.innerHTML = html;
+            
+            // Restore scroll position after DOM update
+            window.scrollTo(0, scrollPos);
+            
+            // Update button states
+            document.querySelectorAll('.time-filter .action-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            const activeBtn = document.querySelector(`[data-range="${range}"]`);
+            if (activeBtn) {
+                activeBtn.classList.add('active');
+
+            }
+        })
+        .catch(error => {
+            console.error('Error loading history:', error);
+            tableBody.innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-danger);">Error: ${error.message}</td></tr>`;
+        });
+}
+
+// ============================================
+// HELPER FUNCTION FOR CSV DOWNLOAD
+// ============================================
+
+// Helper function to download CSV
+function downloadCSV(headers, rows, filename) {
+    // Create CSV content
+    const csvContent = [
+        headers.join(','),
+        ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+    ].join('\n');
+    
+    // Create blob and download
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+}
+
+// Update danger alerts table (24 hours, danger status only)
+function updateDangerAlertsTable() {
+    console.log('updateDangerAlertsTable called');
+    const tableBody = document.getElementById('dangerTable');
+    if (!tableBody) {
+        console.error('dangerTable element not found');
+        return;
+    }
+    
+    // Save scroll position
+    const scrollPos = window.scrollY || window.pageYOffset;
+    
+    // Fetch 24 hours of data
+    fetch(`/api/history/?hours=24`)
+        .then(r => {
+            if (!r.ok) throw new Error(`API Error: ${r.status}`);
+            return r.json();
+        })
+        .then(data => {
+            console.log(`Loaded ${data.length} records, filtering for danger status`);
+            
+            // Filter only danger status
+            const dangerData = data.filter(reading => reading.status === 'danger');
+            console.log(`Found ${dangerData.length} danger readings`);
+            
+            if (!Array.isArray(dangerData) || dangerData.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-light);">Tidak ada alert danger</td></tr>';
+                window.scrollTo(0, scrollPos);
+                return;
+            }
+            
+            // Build HTML for danger readings (show all, not just 25)
+            let html = '';
+            dangerData.forEach(reading => {
+                const time = new Date(reading.timestamp).toLocaleString('id-ID');
+                const ppm = typeof reading.ammonia_level === 'number' ? reading.ammonia_level.toFixed(1) : '0.0';
+                
+                // Highlight danger with red background
+                html += `
+                    <tr style="background-color: rgba(239, 68, 68, 0.1); border-left: 4px solid #ef4444;">
+                        <td style="color: #ef4444; font-weight: 600;">${time}</td>
+                        <td>${reading.location || 'Toilet Kampus'}</td>
+                        <td style="color: #ef4444; font-weight: bold; font-size: 1.05em;">${ppm} ppm</td>
+                        <td><span class="status-badge status-danger">DANGER</span></td>
+                        <td><span class="status-badge" style="background: rgba(239, 68, 68, 0.15); color: #ef4444;">MQTT</span></td>
+                    </tr>
+                `;
+            });
+            
+            tableBody.innerHTML = html;
+            
+            // Restore scroll position
+            window.scrollTo(0, scrollPos);
+        })
+        .catch(error => {
+            console.error('Error loading danger alerts:', error);
+            tableBody.innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-danger);">Error: ${error.message}</td></tr>`;
+        });
+}
+
+function filterDataByRange(range) {
+    const now = Date.now();
+    let startTime;
+    
+    switch (range) {
+        case '3hours': startTime = now - (3 * 60 * 60 * 1000); break;
+        case '1day': startTime = now - (24 * 60 * 60 * 1000); break;
+        case '1week': startTime = now - (7 * 24 * 60 * 60 * 1000); break;
+        case '1month': startTime = now - (30 * 24 * 60 * 60 * 1000); break;
+        default: startTime = now - (3 * 60 * 60 * 1000);
+    }
+    
+    return state.currentData.filter(d => d.timestamp >= startTime);
+}
+
+// ============================================
+// LOCATIONS & DEVICES
+// ============================================
+
+function updateLocationsList() {
+    const container = document.getElementById('locationsList');
+    if (!container) return;
+    
+    let html = '';
+    state.locations.forEach(location => {
+        const statusClass = location.status === 'online' ? 'status-safe' : 'status-danger';
+        const statusText = location.status === 'online' ? 'ONLINE' : 'OFFLINE';
+        
+        html += `
+            <div class="card mb-2">
+                <div class="card-content">
+                    <div class="flex-between">
+                        <div>
+                            <div class="font-semibold">${location.name}</div>
+                            <div class="text-sm text-light">${location.description}</div>
+                            <span class="status-badge ${statusClass}">${statusText}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+    
+    container.innerHTML = html;
+}
+
+function updateDevicesStatus() {
+    const container = document.getElementById('devicesStatus');
+    if (!container) return;
+    
+    // Count active devices
+    const activeCount = state.locations.filter(loc => loc.status === 'online').length;
+    const totalCount = state.locations.length;
+    
+    // Update active devices counter in status card
+    const activeDevicesEl = document.getElementById('activeDevices');
+    if (activeDevicesEl) {
+        activeDevicesEl.textContent = `${activeCount}/${totalCount}`;
+    }
+    
+    let html = '';
+    state.locations.forEach(location => {
+        const statusClass = location.status === 'online' ? 'status-safe' : 'status-danger';
+        const lastUpdate = new Date(location.lastUpdate).toLocaleString('id-ID');
+        
+        html += `
+            <div class="flex-between mb-3 p-3" style="border-bottom: 1px solid var(--border);">
+                <div>
+                    <div class="font-semibold">${location.name}</div>
+                    <div class="text-xs text-light">Last update: ${lastUpdate}</div>
+                </div>
+                <span class="status-badge ${statusClass}">${location.status.toUpperCase()}</span>
+            </div>
+        `;
+    });
+    
+    container.innerHTML = html;
+}
+
+function getLocationName(id) {
+    const location = state.locations.find(loc => loc.id === id);
+    return location ? location.name : 'Unknown Location';
+}
+
+// ============================================
+// PAGE NAVIGATION
+// ============================================
+
+function switchPage(pageId) {
+    document.querySelectorAll('.page').forEach(page => {
+        page.classList.remove('active');
+        page.style.display = 'none';
+        page.style.opacity = '0';
+    });
+    
+    document.querySelectorAll('.menu-item').forEach(item => {
+        item.classList.remove('active');
+    });
+    
+    // Convert hyphenated pageId to camelCase for HTML id
+    const camelCaseId = pageId.split('-').map((word, index) => 
+        index === 0 ? word : word.charAt(0).toUpperCase() + word.slice(1)
+    ).join('');
+    
+    const targetPage = document.getElementById(camelCaseId + 'Page');
+    if (targetPage) {
+        targetPage.classList.add('active');
+        targetPage.style.display = 'block';
+        targetPage.style.opacity = '1';
+        console.log('Page shown:', camelCaseId + 'Page');
+    }
+    
+    const menuItem = document.querySelector(`[data-page="${pageId}"]`);
+    if (menuItem) {
+        menuItem.classList.add('active');
+    }
+    
+    // Load page-specific data
+    if (pageId === 'api-config') {
+        setTimeout(() => loadAPIConfig(), 100);
+    } else if (pageId === 'calibration') {
+        setTimeout(() => loadCalibrationStatus(), 100);
+    } else if (pageId === 'logs') {
+        setTimeout(() => loadSystemLogs(), 100);
+    } else if (pageId === 'docs') {
+        setTimeout(() => loadDocumentation(), 100);
+    } else if (pageId === 'ai-prediction') {
+        setTimeout(() => loadAIPrediction(), 100);
+        // Start auto-refresh untuk AI Prediction setiap 10 detik (realtime monitoring)
+        startAIPredictionAutoRefresh();
+    } else if (pageId === 'reports') {
+        setTimeout(() => loadAnalytics('24h'), 100);
+    }
+    
+    updatePageTitle(pageId);
+}
+
+// Auto-refresh interval untuk AI Prediction
+let aiPredictionInterval = null;
+
+function startAIPredictionAutoRefresh() {
+    // Clear interval jika sudah ada
+    if (aiPredictionInterval) {
+        clearInterval(aiPredictionInterval);
+    }
+    
+    // Refresh setiap 10 detik
+    aiPredictionInterval = setInterval(() => {
+        loadAIPrediction();
+    }, 10000);
+}
+
+function stopAIPredictionAutoRefresh() {
+    if (aiPredictionInterval) {
+        clearInterval(aiPredictionInterval);
+        aiPredictionInterval = null;
+    }
+}
+
+function updatePageTitle(pageId) {
+    const titles = {
+        'dashboard': 'Dashboard Monitoring',
+        'locations': 'Manajemen Lokasi Toilet',
+        'threshold': 'Pengaturan Ambang Batas',
+        'ai-prediction': 'AI Prediction & Analytics',
+        'api-config': 'API Configuration',
+        'users': 'Manajemen Pengguna',
+        'devices': 'Status Perangkat',
+        'calibration': 'Kalibrasi Sensor',
+        'logs': 'Log Sistem',
+        'export': 'Export Data',
+        'docs': 'Dokumentasi Sistem',
+        'reports': 'Laporan & Analytics'
+    };
+    
+    const subtitles = {
+        'dashboard': 'Sistem monitoring real-time konsentrasi amonia',
+        'locations': 'Kelola lokasi monitoring dan perangkat sensor',
+        'ai-prediction': 'Analisis prediktif dan machine learning',
+        'reports': 'Laporan komprehensif dan analisis data',
+        'devices': 'Monitor status dan kesehatan perangkat',
+        'threshold': 'Atur ambang batas peringatan sistem',
+        'api-config': 'Konfigurasi koneksi API dan endpoint',
+        'calibration': 'Kalibrasi dan tuning sensor amonia',
+        'users': 'Manajemen pengguna dan hak akses',
+        'logs': 'Monitor log sistem dan aktivitas',
+        'export': 'Ekspor data dan laporan',
+        'docs': 'Dokumentasi dan panduan penggunaan'
+    };
+    
+    const pageTitle = document.getElementById('pageTitle');
+    const pageSubtitle = document.getElementById('pageSubtitle');
+    
+    if (pageTitle) pageTitle.textContent = titles[pageId] || 'Dashboard Monitoring';
+    if (pageSubtitle) pageSubtitle.textContent = subtitles[pageId] || 'Sistem monitoring real-time konsentrasi amonia';
+}
+
+// ============================================
+// THEME MANAGEMENT
+// ============================================
+
+function toggleTheme() {
+    state.theme = state.theme === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', state.theme);
+    
+    const themeToggle = document.getElementById('themeToggle');
+    if (themeToggle) {
+        if (state.theme === 'light') {
+            themeToggle.innerHTML = '<i class="fas fa-moon"></i><span>Dark Mode</span>';
+        } else {
+            themeToggle.innerHTML = '<i class="fas fa-sun"></i><span>Light Mode</span>';
+        }
+    }
+}
+
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
+
+function testAPIConnection() {
+    showNotification('🔌 Testing API Connection...', 'info');
+    
+    Promise.all([
+        fetch('/api/latest/').then(r => r.json()),
+        fetch('/api/threshold/').then(r => r.json()),
+        fetch('/api/statistics/').then(r => r.json())
+    ])
+    .then(results => {
+        state.apiConnected = true;
+        const msg = '✅ API Connection OK\n' +
+                   '• Latest: ' + (results[0].ammonia_level || 'N/A') + ' ppm\n' +
+                   '• Thresholds: ' + results[1].warning_level + '/' + results[1].danger_level + ' ppm\n' +
+                   '• Stats: ' + results[2].total_readings + ' readings';
+        showNotification(msg, 'success');
+        updateConnectionStatus();
+    })
+    .catch(err => {
+        state.apiConnected = false;
+        showNotification('❌ API Connection Failed\n' + err.message, 'error');
+        updateConnectionStatus();
+    });
+}
+
+function refreshData() {
+    showNotification('🔄 Refreshing data...', 'info');
+    pollSensorData();
+    
+    setTimeout(() => {
+        showNotification('✅ Data refreshed successfully!', 'success');
+    }, 500);
+}
+
+function generateReport() {
+    if (state.currentData.length === 0) {
+        showNotification('❌ No data available to generate report', 'error');
+        return;
+    }
+    
+    showNotification('📄 Generating Report...', 'info');
+    
+    // Fetch statistics
+    fetch('/api/statistics/')
+        .then(r => r.json())
+        .then(stats => {
+            // Create report content
+            const reportHTML = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Amonia Monitoring Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; border-bottom: 3px solid #3b82f6; padding-bottom: 10px; }
+        .stat-box { display: inline-block; margin: 10px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; background: #f9f9f9; }
+        .stat-value { font-size: 24px; font-weight: bold; color: #3b82f6; }
+        .stat-label { font-size: 12px; color: #666; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #3b82f6; color: white; }
+        .status-danger { color: #ef4444; font-weight: bold; }
+        .status-warning { color: #f59e0b; font-weight: bold; }
+        .status-safe { color: #10b981; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>📊 Amonia Monitoring Report</h1>
+    <p>Generated: ${new Date().toLocaleString('id-ID')}</p>
+    
+    <h2>Statistics Summary</h2>
+    <div class="stat-box">
+        <div class="stat-value">${stats.average.toFixed(2)}</div>
+        <div class="stat-label">Average (ppm)</div>
+    </div>
+    <div class="stat-box">
+        <div class="stat-value">${stats.maximum.toFixed(2)}</div>
+        <div class="stat-label">Maximum (ppm)</div>
+    </div>
+    <div class="stat-box">
+        <div class="stat-value">${stats.minimum.toFixed(2)}</div>
+        <div class="stat-label">Minimum (ppm)</div>
+    </div>
+    <div class="stat-box">
+        <div class="stat-value">${stats.total_readings}</div>
+        <div class="stat-label">Total Readings</div>
+    </div>
+    
+    <h2>Status Distribution</h2>
+    <table>
+        <tr>
+            <th>Status</th>
+            <th>Count</th>
+            <th>Percentage</th>
+        </tr>
+        <tr>
+            <td><span class="status-safe">SAFE</span></td>
+            <td>${stats.safe_readings}</td>
+            <td>${((stats.safe_readings / stats.total_readings) * 100).toFixed(1)}%</td>
+        </tr>
+        <tr>
+            <td><span class="status-warning">WARNING</span></td>
+            <td>${stats.warning_readings}</td>
+            <td>${((stats.warning_readings / stats.total_readings) * 100).toFixed(1)}%</td>
+        </tr>
+        <tr>
+            <td><span class="status-danger">DANGER</span></td>
+            <td>${stats.danger_readings}</td>
+            <td>${((stats.danger_readings / stats.total_readings) * 100).toFixed(1)}%</td>
+        </tr>
+    </table>
+    
+    <h2>Threshold Settings</h2>
+    <p>Warning Level: <strong>${state.thresholds.warning} ppm</strong></p>
+    <p>Danger Level: <strong>${state.thresholds.danger} ppm</strong></p>
+    
+    <h2>Recent Readings</h2>
+    <table>
+        <tr>
+            <th>Timestamp</th>
+            <th>Concentration (ppm)</th>
+            <th>Status</th>
+        </tr>
+            ${state.currentData.slice(-10).reverse().map(d => `
+            <tr>
+                <td>${new Date(d.timestamp).toLocaleString('id-ID')}</td>
+                <td>${(d.ammonia_level || d.value).toFixed(2)}</td>
+                <td><span class="status-${d.status}">${d.status.toUpperCase()}</span></td>
+            </tr>
+            `).join('')}
+    </table>
+</body>
+</html>
+            `;
+            
+            // Open in new window for printing
+            const reportWindow = window.open('', 'Report', 'width=800,height=600');
+            reportWindow.document.write(reportHTML);
+            reportWindow.document.close();
+            
+            // Auto-print
+            setTimeout(() => {
+                reportWindow.print();
+            }, 250);
+            
+            showNotification('✅ Report generated! Check your printer...', 'success');
+        })
+        .catch(err => {
+            showNotification('❌ Failed to generate report: ' + err.message, 'error');
+        });
+}
+
+// Notification system
+function showNotification(message, type = 'info') {
+    const notification = document.createElement('div');
+    notification.className = `notification notification-${type}`;
+    notification.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>${message}</div>
+            <button onclick="this.parentElement.parentElement.remove()" style="background: none; border: none; color: inherit; cursor: pointer; font-size: 20px;">×</button>
+        </div>
+    `;
+    
+    // Add styles if not exists
+    if (!document.getElementById('notificationStyles')) {
+        const style = document.createElement('style');
+        style.id = 'notificationStyles';
+        style.innerHTML = `
+            .notification {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 15px 20px;
+                border-radius: 8px;
+                color: white;
+                z-index: 10000;
+                animation: slideIn 0.3s ease;
+                max-width: 350px;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            }
+            .notification-info {
+                background: #3b82f6;
+            }
+            .notification-success {
+                background: #10b981;
+            }
+            .notification-error {
+                background: #ef4444;
+            }
+            .notification-warning {
+                background: #f59e0b;
+            }
+            @keyframes slideIn {
+                from { transform: translateX(400px); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+    
+    document.body.appendChild(notification);
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        notification.style.animation = 'slideOut 0.3s ease';
+        setTimeout(() => notification.remove(), 300);
+    }, 5000);
+    
+    // Add slide out animation
+    if (!document.querySelector('#notificationStyles').innerHTML.includes('slideOut')) {
+        document.getElementById('notificationStyles').innerHTML += `
+            @keyframes slideOut {
+                to { transform: translateX(400px); opacity: 0; }
+            }
+        `;
+    }
+}
+
+function showModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) modal.style.display = 'block';
+}
+
+function hideModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) modal.style.display = 'none';
+}
+
+// ============================================
+// THRESHOLD SETTINGS
+// ============================================
+
+function loadThresholdSettings() {
+    fetch('/api/threshold/')
+        .then(r => r.json())
+        .then(data => {
+            state.thresholds.warning = data.warning_level;
+            state.thresholds.danger = data.danger_level;
+            
+            // Update UI inputs
+            const warningInput = document.getElementById('warningInput');
+            const dangerInput = document.getElementById('dangerInput');
+            if (warningInput) warningInput.value = data.warning_level;
+            if (dangerInput) dangerInput.value = data.danger_level;
+            
+            // Update threshold display in both pages
+            updateThresholdDisplay();
+            updateDashboardThresholdDisplay();
+        })
+        .catch(err => console.error('Failed to load thresholds:', err));
+}
+
+function resetThresholds() {
+    // Reset to new defaults: Warning 350, Danger 400
+    const warningInput = document.getElementById('warningInput');
+    const dangerInput = document.getElementById('dangerInput');
+    
+    if (warningInput) warningInput.value = 350;
+    if (dangerInput) dangerInput.value = 400;
+    
+    state.thresholds.warning = 350;
+    state.thresholds.danger = 400;
+    
+    updateThresholdDisplay();
+    showNotification('🔄 Threshold reset to default values (Warning: 350, Danger: 400)', 'info');
+}
+
+function updateThresholdDisplay() {
+    // Update display values
+    const warningDisplay = document.getElementById('warningDisplay');
+    const dangerDisplay = document.getElementById('dangerDisplay');
+    const warningInput = document.getElementById('warningInput');
+    const dangerInput = document.getElementById('dangerInput');
+    
+    if (warningDisplay && warningInput) {
+        warningDisplay.textContent = warningInput.value;
+    }
+    if (dangerDisplay && dangerInput) {
+        dangerDisplay.textContent = dangerInput.value;
+    }
+}
+
+// Real-time update display as user types
+document.addEventListener('DOMContentLoaded', function() {
+    const warningInput = document.getElementById('warningInput');
+    const dangerInput = document.getElementById('dangerInput');
+    
+    if (warningInput) {
+        warningInput.addEventListener('input', updateThresholdDisplay);
+    }
+    if (dangerInput) {
+        dangerInput.addEventListener('input', updateThresholdDisplay);
+    }
+});
+
+function saveThresholds() {
+    const warningInput = document.getElementById('warningInput');
+    const dangerInput = document.getElementById('dangerInput');
+    
+    if (!warningInput || !dangerInput) {
+        showNotification('❌ Error: Threshold inputs not found', 'error');
+        return;
+    }
+    
+    const warning = parseFloat(warningInput.value);
+    const danger = parseFloat(dangerInput.value);
+    
+    // Validation
+    if (isNaN(warning) || isNaN(danger)) {
+        showNotification('❌ Error: Please enter valid numbers', 'error');
+        return;
+    }
+    
+    if (warning >= danger) {
+        showNotification('❌ Error: Warning level harus lebih kecil dari Danger level', 'error');
+        return;
+    }
+    
+    if (warning < 0 || danger < 0) {
+        showNotification('❌ Error: Values tidak boleh negatif', 'error');
+        return;
+    }
+    
+    showNotification('💾 Saving threshold settings...', 'info');
+    
+    // Prepare request data
+    const formData = new FormData();
+    formData.append('warning_level', warning);
+    formData.append('danger_level', danger);
+    
+    fetch('/api/save-threshold/', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRFToken': getCookie('csrftoken')
+        }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            state.thresholds.warning = warning;
+            state.thresholds.danger = danger;
+            showNotification('✅ Threshold settings saved successfully!', 'success');
+            
+            // Update dashboard display with new thresholds
+            updateDashboardThresholdDisplay();
+            
+            // Update charts to show new threshold lines
+            updateCharts();
+        } else {
+            showNotification('❌ Error: ' + (data.error || 'Failed to save'), 'error');
+        }
+    })
+    .catch(err => {
+        showNotification('❌ Error: ' + err.message, 'error');
+    });
+}
+
+// Update dashboard threshold display
+function updateDashboardThresholdDisplay() {
+    const warningThreshold = document.getElementById('warningThreshold');
+    const dangerThreshold = document.getElementById('dangerThreshold');
+    
+    if (warningThreshold) {
+        warningThreshold.textContent = state.thresholds.warning + ' ppm';
+    }
+    if (dangerThreshold) {
+        dangerThreshold.textContent = state.thresholds.danger + ' ppm';
+    }
+}
+
+function resetThresholds() {
+    if (confirm('Are you sure? This will reset to default values (Warning: 25 ppm, Danger: 50 ppm)')) {
+        const warningInput = document.getElementById('warningInput');
+        const dangerInput = document.getElementById('dangerInput');
+        
+        if (warningInput) warningInput.value = '25';
+        if (dangerInput) dangerInput.value = '50';
+        
+        updateThresholdDisplay();
+        saveThresholds();
+    }
+}
+
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+
+// ============================================
+// NOTIFICATION & ALERT SYSTEM
+// ============================================
+
+function checkThresholdBreach(reading) {
+    // Check if either temperature or humidity is in danger state
+    const isDangerTemp = reading.temp_status === 'danger';
+    const isDangerHum = reading.humidity_status === 'danger';
+    const currentDanger = isDangerTemp || isDangerHum;
+    
+    // Check previous status
+    let previousDanger = false;
+    if (state.currentData.length > 1) {
+        const previous = state.currentData[state.currentData.length - 2];
+        previousDanger = previous.temp_status === 'danger' || previous.humidity_status === 'danger';
+    }
+    
+    // Only notify on danger status change (to avoid spam)
+    if (currentDanger && !previousDanger) {
+        let alertMessage = '';
+        
+        if (isDangerTemp && isDangerHum) {
+            alertMessage = `🚨 DANGER ALERT: Suhu=${reading.temperature}°C (Bahaya) & Kelembaban=${reading.humidity}% (Bahaya)!`;
+        } else if (isDangerTemp) {
+            alertMessage = `🚨 DANGER ALERT: Suhu=${reading.temperature}°C BAHAYA (Ambang: ${state.thresholds.temperature.danger_high}°C)!`;
+        } else if (isDangerHum) {
+            alertMessage = `🚨 DANGER ALERT: Kelembaban=${reading.humidity}% BAHAYA (Ambang: ${state.thresholds.humidity.danger_high}%)!`;
+        }
+        
+        if (alertMessage) {
+            showNotification(alertMessage, 'error');
+            playAlertSound();
+        }
+    } else if (!currentDanger && previousDanger) {
+        let alertMessage = `✅ Kondisi kembali normal: Suhu=${reading.temperature}°C, Kelembaban=${reading.humidity}%`;
+        showNotification(alertMessage, 'success');
+    }
+}
+            
+            // Add to notification list (legacy/missing vars guard)
+            // For DHT22 dashboard, notifications are already shown via showNotification(),
+            // so we skip addNotificationToList here to avoid runtime errors.
+        }
+    }
+}
+
+
+function addNotificationToList(notification) {
+    const notificationList = document.getElementById('notificationList');
+    if (!notificationList) return;
+    
+    // Remove "No notifications yet" message if it exists
+    const noNotifyMsg = notificationList.querySelector('div[style*="text-align: center"]');
+    if (noNotifyMsg) {
+        noNotifyMsg.remove();
+    }
+    
+    // Create notification element
+    const notifEl = document.createElement('div');
+    notifEl.style.cssText = `
+        padding: 12px;
+        margin-bottom: 8px;
+        border-radius: 6px;
+        border-left: 4px solid;
+        background: rgba(0,0,0,0.05);
+    `;
+    
+    const bgColors = {
+        error: 'rgba(239, 68, 68, 0.1)',
+        warning: 'rgba(245, 158, 11, 0.1)',
+        success: 'rgba(16, 185, 129, 0.1)',
+        info: 'rgba(59, 130, 246, 0.1)'
+    };
+    
+    const borderColors = {
+        error: '#ef4444',
+        warning: '#f59e0b',
+        success: '#10b981',
+        info: '#3b82f6'
+    };
+    
+    notifEl.style.background = bgColors[notification.type] || bgColors.info;
+    notifEl.style.borderLeftColor = borderColors[notification.type] || borderColors.info;
+    
+    notifEl.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: start; gap: 10px;">
+            <div>
+                <div style="font-weight: 600; font-size: 13px;">${notification.message}</div>
+                <div style="font-size: 11px; color: #666; margin-top: 4px;">
+                    ${notification.timestamp.toLocaleString('id-ID')}
+                </div>
+            </div>
+            <button onclick="this.parentElement.parentElement.remove()" style="background: none; border: none; cursor: pointer; opacity: 0.5;">×</button>
+        </div>
+    `;
+    
+    // Add to top of list
+    notificationList.insertBefore(notifEl, notificationList.firstChild);
+    
+    // Keep only last 20 notifications
+    while (notificationList.children.length > 20) {
+        notificationList.removeChild(notificationList.lastChild);
+    }
+}
+
+function playAlertSound() {
+    // Create a simple beep sound using Web Audio API
+    try {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        
+        oscillator.frequency.value = 800;
+        oscillator.type = 'sine';
+        
+        gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+        
+        oscillator.start(audioContext.currentTime);
+        oscillator.stop(audioContext.currentTime + 0.5);
+    } catch (e) {
+        console.log('Audio alert not supported');
+    }
+}
+
+// ============================================
+// API CONFIGURATION
+// ============================================
+
+function loadAPIConfig() {
+    console.log('Loading API configuration...');
+    
+    // Load MQTT Config
+    fetch('/api/mqtt-config/')
+        .then(response => response.json())
+        .then(data => {
+            console.log('MQTT Config data:', data);
+            
+            // Set broker info
+            if (document.getElementById('mqttBroker')) {
+                document.getElementById('mqttBroker').value = data.broker || 'N/A';
+            }
+            if (document.getElementById('mqttPort')) {
+                document.getElementById('mqttPort').value = data.port || 'N/A';
+            }
+            if (document.getElementById('mqttTopic')) {
+                document.getElementById('mqttTopic').value = data.topic || 'N/A';
+            }
+            
+            // Update connection status
+            if (document.getElementById('mqttConnectedStatus')) {
+                if (data.is_receiving) {
+                    document.getElementById('mqttConnectedStatus').textContent = '✓ Connected & Receiving';
+                    document.getElementById('mqttConnectedStatus').style.color = '#10b981';
+                } else if (data.is_connected) {
+                    document.getElementById('mqttConnectedStatus').textContent = '⚠ Connected (No Data)';
+                    document.getElementById('mqttConnectedStatus').style.color = '#f59e0b';
+                } else {
+                    document.getElementById('mqttConnectedStatus').textContent = '✗ Disconnected';
+                    document.getElementById('mqttConnectedStatus').style.color = '#ef4444';
+                }
+            }
+        })
+        .catch(error => {
+            console.error('Error loading MQTT config:', error);
+            if (document.getElementById('mqttConnectedStatus')) {
+                document.getElementById('mqttConnectedStatus').textContent = '✗ Error loading config';
+                document.getElementById('mqttConnectedStatus').style.color = '#ef4444';
+            }
+        });
+}
+
+function testMQTTConnection(btn) {
+    console.log('Testing MQTT connection...');
+    
+    // Find button if not provided
+    if (!btn) {
+        const testBtn = document.querySelector('[onclick*="testMQTTConnection"]');
+        btn = testBtn;
+    }
+    
+    if (!btn) return;
+    
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Testing...';
+    btn.disabled = true;
+    
+    fetch('/api/mqtt-config/')
+        .then(response => response.json())
+        .then(data => {
+            let message = '';
+            let type = 'success';
+            
+            if (data.is_connected && data.is_receiving) {
+                message = '✓ MQTT Connection Aktif & Menerima Data';
+                type = 'success';
+            } else if (data.is_connected) {
+                message = '⚠ MQTT Terhubung tapi tidak menerima data';
+                type = 'warning';
+            } else {
+                message = '✗ MQTT Tidak Terhubung';
+                type = 'error';
+            }
+            
+            showNotification(message, type);
+            loadAPIConfig();
+        })
+        .catch(error => {
+            showNotification('✗ Gagal mengecek MQTT connection', 'error');
+            console.error('Error testing MQTT:', error);
+        })
+        .finally(() => {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        });
+}
+
+// ============================================
+// CALIBRATION
+// ============================================
+
+function loadCalibrationStatus() {
+    fetch('/api/calibration-status/')
+        .then(response => response.json())
+        .then(data => {
+            // Update current reading
+            document.getElementById('currentReading').textContent = Math.round(data.current_reading * 10) / 10 + ' ppm';
+            document.getElementById('currentZeroPoint').value = data.zero_point || '0';
+            document.getElementById('currentOffset').value = data.offset || '0';
+            
+            if (data.last_calibration) {
+                document.getElementById('lastCalibrationDate').textContent = new Date(data.last_calibration).toLocaleString('id-ID');
+                document.getElementById('daysSinceCalibration').textContent = data.days_since_calibration || '0';
+            } else {
+                document.getElementById('lastCalibrationDate').textContent = 'Belum pernah dikalibrasi';
+                document.getElementById('daysSinceCalibration').textContent = '-';
+            }
+            
+            // Show warning if needs calibration
+            if (data.needs_calibration) {
+                document.getElementById('calibrationWarning').style.display = 'block';
+            } else {
+                document.getElementById('calibrationWarning').style.display = 'none';
+            }
+        })
+        .catch(error => {
+            console.error('Error loading calibration status:', error);
+            showNotification('✗ Gagal load calibration status', 'error');
+        });
+}
+
+function setZeroPoint() {
+    const zeroPoint = document.getElementById('newZeroPoint').value;
+    if (!zeroPoint) {
+        showNotification('⚠️ Masukkan nilai zero point', 'warning');
+        return;
+    }
+    
+    fetch('/api/set-zero-point/', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({zero_point: parseFloat(zeroPoint)})
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification('✓ Zero point calibration berhasil diset', 'success');
+            document.getElementById('newZeroPoint').value = '';
+            loadCalibrationStatus();
+        } else {
+            showNotification('✗ ' + data.error, 'error');
+        }
+    })
+    .catch(error => {
+        showNotification('✗ Gagal set zero point', 'error');
+        console.error(error);
+    });
+}
+
+function setOffset() {
+    const offset = document.getElementById('newOffset').value;
+    if (offset === '') {
+        showNotification('⚠️ Masukkan nilai offset', 'warning');
+        return;
+    }
+    
+    fetch('/api/set-offset/', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offset: parseFloat(offset)})
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification('✓ Offset calibration berhasil diupdate', 'success');
+            document.getElementById('newOffset').value = '';
+            loadCalibrationStatus();
+        } else {
+            showNotification('✗ ' + data.error, 'error');
+        }
+    })
+    .catch(error => {
+        showNotification('✗ Gagal set offset', 'error');
+        console.error(error);
+    });
+}
+
+function resetCalibration() {
+    if (!confirm('⚠️ Yakin reset kalibrasi ke factory default? Ini akan menghapus semua setting kalibrasi!')) {
+        return;
+    }
+    
+    fetch('/api/reset-calibration/', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'}
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification('✓ Kalibrasi berhasil direset ke factory default', 'success');
+            loadCalibrationStatus();
+        } else {
+            showNotification('✗ ' + data.error, 'error');
+        }
+    })
+    .catch(error => {
+        showNotification('✗ Gagal reset calibration', 'error');
+        console.error(error);
+    });
+}
+
+// ============================================
+// EXPORT DATA FUNCTIONS
+// ============================================
+
+let exportState = {
+    type: 'all',  // 'all' or 'danger'
+    range: '1day'
+};
+
+function setupExportTypeButtons() {
+    const typeButtons = document.querySelectorAll('.export-type-btn');
+    typeButtons.forEach(btn => {
+        btn.addEventListener('click', function() {
+            exportState.type = this.getAttribute('data-export-type');
+            
+            // Update active state
+            typeButtons.forEach(b => {
+                b.style.borderColor = '#e5e7eb';
+                b.style.background = '#f3f4f6';
+                b.style.color = '#374151';
+            });
+            
+            this.style.borderColor = this.getAttribute('data-export-type') === 'danger' ? '#ef4444' : '#0284c7';
+            this.style.background = this.getAttribute('data-export-type') === 'danger' ? '#fee2e2' : '#dbeafe';
+            this.style.color = this.getAttribute('data-export-type') === 'danger' ? '#991b1b' : '#075985';
+        });
+    });
+    
+    // Set default to 'all'
+    typeButtons[0].click();
+}
+
+function setExportRange(range) {
+    exportState.range = range;
+    
+    // Show processing message
+    document.getElementById('exportStatus').style.display = 'block';
+    document.getElementById('downloadBtn').style.display = 'none';
+    
+    // Get hours based on range
+    let hours = 24;
+    switch(range) {
+        case '1day': hours = 24; break;
+        case '7days': hours = 168; break;
+        case '30days': hours = 720; break;
+    }
+    
+    // Fetch data based on filter type
+    fetch(`/api/history/?hours=${hours}`)
+        .then(res => res.json())
+        .then(data => {
+            // Filter if needed
+            let exportData = data;
+            if (exportState.type === 'danger') {
+                exportData = data.filter(r => r.status === 'danger');
+            }
+            
+            if (exportData.length === 0) {
+                document.getElementById('exportStatus').style.display = 'none';
+                showNotification('✗ Tidak ada data untuk diexport', 'warning');
+                return;
+            }
+            
+            // Store data for download
+            window.exportData = exportData;
+            
+            // Show download button
+            document.getElementById('exportStatus').style.display = 'none';
+            document.getElementById('downloadBtn').style.display = 'block';
+            
+            showNotification(`✓ Data siap diexport (${exportData.length} records)`, 'success');
+        })
+        .catch(err => {
+            console.error('Error fetching export data:', err);
+            document.getElementById('exportStatus').style.display = 'none';
+            showNotification('✗ Error: ' + err.message, 'error');
+        });
+}
+
+function showCustomDatePicker() {
+    document.getElementById('customDatePicker').style.display = 'block';
+}
+
+function exportCustomRange() {
+    const startDate = document.getElementById('exportStartDate').value;
+    const endDate = document.getElementById('exportEndDate').value;
+    
+    if (!startDate || !endDate) {
+        showNotification('✗ Pilih tanggal mulai dan akhir', 'error');
+        return;
+    }
+    
+    // For custom range, we'll fetch data and filter by date
+    document.getElementById('exportStatus').style.display = 'block';
+    document.getElementById('downloadBtn').style.display = 'none';
+    
+    // Default to 30 days for safety
+    fetch(`/api/history/?hours=720`)
+        .then(res => res.json())
+        .then(data => {
+            const startTime = new Date(startDate).getTime();
+            const endTime = new Date(endDate).getTime();
+            
+            let exportData = data.filter(r => {
+                const readTime = new Date(r.timestamp).getTime();
+                return readTime >= startTime && readTime <= endTime;
+            });
+            
+            // Filter for danger if needed
+            if (exportState.type === 'danger') {
+                exportData = exportData.filter(r => r.status === 'danger');
+            }
+            
+            if (exportData.length === 0) {
+                document.getElementById('exportStatus').style.display = 'none';
+                showNotification('✗ Tidak ada data dalam range tersebut', 'warning');
+                return;
+            }
+            
+            window.exportData = exportData;
+            document.getElementById('exportStatus').style.display = 'none';
+            document.getElementById('downloadBtn').style.display = 'block';
+            
+            showNotification(`✓ Data siap diexport (${exportData.length} records)`, 'success');
+        })
+        .catch(err => {
+            console.error('Error fetching custom range data:', err);
+            document.getElementById('exportStatus').style.display = 'none';
+            showNotification('✗ Error: ' + err.message, 'error');
+        });
+}
+
+function downloadExport() {
+    if (!window.exportData || window.exportData.length === 0) {
+        showNotification('✗ Tidak ada data untuk didownload', 'error');
+        return;
+    }
+    
+    const headers = ['Waktu', 'Konsentrasi (ppm)', 'Status', 'Sumber'];
+    const rows = window.exportData.map(reading => [
+        new Date(reading.timestamp).toLocaleString('id-ID'),
+        typeof reading.ammonia_level === 'number' ? reading.ammonia_level.toFixed(2) : '0',
+        reading.status || 'UNKNOWN',
+        reading.source || 'MQTT'
+    ]);
+    
+    const filename = `amonia-${exportState.type}-${new Date().toISOString().split('T')[0]}.csv`;
+    downloadCSV(headers, rows, filename);
+    
+    showNotification('✓ Download dimulai', 'success');
+}
+
+// ============================================
+// SYSTEM LOGS FUNCTIONS
+// ============================================
+
+let currentLogSeverityFilter = 'all';
+
+function loadSystemLogs() {
+    const url = currentLogSeverityFilter === 'all' 
+        ? '/api/system-logs/?limit=100'
+        : `/api/system-logs/?severity=${currentLogSeverityFilter}&limit=100`;
+    
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            const tbody = document.getElementById('logsTableBody');
+            tbody.innerHTML = '';
+            
+            if (data.success && data.logs.length > 0) {
+                data.logs.forEach(log => {
+                    const timestamp = new Date(log.timestamp).toLocaleString('id-ID');
+                    
+                    // Color based on severity
+                    let severityColor = '#0284c7';  // INFO - blue
+                    let severityBg = '#dbeafe';
+                    if (log.severity === 'WARNING') {
+                        severityColor = '#92400e';
+                        severityBg = '#fef3c7';
+                    } else if (log.severity === 'ERROR' || log.severity === 'CRITICAL') {
+                        severityColor = '#7f1d1d';
+                        severityBg = '#fee2e2';
+                    }
+                    
+                    const row = document.createElement('tr');
+                    row.style.borderBottom = '1px solid #e5e7eb';
+                    row.innerHTML = `
+                        <td style="padding: 12px; font-size: 12px;">${timestamp}</td>
+                        <td style="padding: 12px; font-size: 12px; font-weight: 600;">${log.event_type_display || log.event_type}</td>
+                        <td style="padding: 12px;">
+                            <span style="background: ${severityBg}; color: ${severityColor}; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">
+                                ${log.severity_display || log.severity}
+                            </span>
+                        </td>
+                        <td style="padding: 12px; font-size: 12px; max-width: 400px; word-break: break-word;">${log.description}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } else {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 40px; color: #999;">Tidak ada log</td></tr>';
+            }
+        })
+        .catch(error => {
+            console.error('Error loading logs:', error);
+            showNotification('✗ Gagal memuat log sistem', 'error');
+        });
+}
+
+function filterLogsBySeverity(severity) {
+    currentLogSeverityFilter = severity;
+    loadSystemLogs();
+}
+
+// ============================================
+// DOCUMENTATION FUNCTIONS
+// ============================================
+
+function loadDocumentation() {
+    fetch('/api/documentation/')
+        .then(response => response.json())
+        .then(docs => {
+            const content = document.getElementById('docsContent');
+            
+            let html = `
+                <div style="max-width: 900px; margin: 0 auto;">
+                    <!-- System Info -->
+                    <div style="background: #f0fdf4; border-left: 4px solid #10b981; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
+                        <h2 style="margin: 0 0 10px 0; color: #166534;">
+                            <i class="fas fa-vial"></i> ${docs.system_info.name}
+                        </h2>
+                        <p style="margin: 0; color: #16a34a;">Version ${docs.system_info.version} | ${docs.system_info.description}</p>
+                    </div>
+                    
+                    <!-- Features Section -->
+                    <h3 style="border-bottom: 2px solid #3b82f6; padding-bottom: 10px; margin-top: 30px;">
+                        <i class="fas fa-star"></i> Fitur Utama
+                    </h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+            `;
+            
+            for (const [key, value] of Object.entries(docs.features)) {
+                html += `
+                    <div style="background: #f3f4f6; padding: 12px; border-radius: 4px;">
+                        <strong style="color: #1f2937;">${key.replace(/_/g, ' ')}</strong>
+                        <p style="margin: 5px 0 0 0; font-size: 13px; color: #6b7280;">${value}</p>
+                    </div>
+                `;
+            }
+            
+            html += `
+                    </div>
+                    
+                    <!-- Thresholds Section -->
+                    <h3 style="border-bottom: 2px solid #3b82f6; padding-bottom: 10px; margin-top: 30px;">
+                        <i class="fas fa-sliders-h"></i> Ambang Batas Konsentrasi
+                    </h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+            `;
+            
+            for (const [key, threshold] of Object.entries(docs.thresholds)) {
+                const colorCode = threshold.color === 'green' ? '#10b981' : threshold.color === 'yellow' ? '#f59e0b' : '#ef4444';
+                html += `
+                    <div style="border-left: 4px solid ${colorCode}; background: #f9fafb; padding: 12px; border-radius: 4px;">
+                        <div style="display: inline-block; width: 16px; height: 16px; background: ${colorCode}; border-radius: 2px; margin-right: 8px; vertical-align: middle;"></div>
+                        <strong>${key.toUpperCase()}</strong>
+                        <p style="margin: 8px 0 0 0; font-size: 12px; color: #6b7280;">
+                            <strong>${threshold.min}-${threshold.max} ppm</strong><br>
+                            ${threshold.description}
+                        </p>
+                    </div>
+                `;
+            }
+            
+            html += `
+                    </div>
+                    
+                    <!-- Calibration Section -->
+                    <h3 style="border-bottom: 2px solid #3b82f6; padding-bottom: 10px; margin-top: 30px;">
+                        <i class="fas fa-tools"></i> Kalibrasi Sensor
+                    </h3>
+                    <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
+                        <p style="margin: 0 0 8px 0; font-weight: 600;">${docs.calibration.description}</p>
+                        <ul style="margin: 8px 0 0 0; padding-left: 20px; font-size: 13px;">
+                            <li><strong>Zero Point:</strong> ${docs.calibration.zero_point}</li>
+                            <li><strong>Offset:</strong> ${docs.calibration.offset}</li>
+                            <li><strong>Maintenance Interval:</strong> ${docs.calibration.maintenance_interval}</li>
+                        </ul>
+                    </div>
+                    
+                    <!-- MQTT Configuration -->
+                    <h3 style="border-bottom: 2px solid #3b82f6; padding-bottom: 10px; margin-top: 30px;">
+                        <i class="fas fa-plug"></i> Konfigurasi MQTT
+                    </h3>
+                    <div style="background: #f0f9ff; border-left: 4px solid #0284c7; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
+                        <p style="margin: 5px 0;"><strong>Broker:</strong> <code style="background: #e0f2fe; padding: 2px 6px; border-radius: 2px;">${docs.mqtt_configuration.broker}</code></p>
+                        <p style="margin: 5px 0;"><strong>Port:</strong> <code style="background: #e0f2fe; padding: 2px 6px; border-radius: 2px;">${docs.mqtt_configuration.port}</code></p>
+                        <p style="margin: 5px 0;"><strong>Topic:</strong> <code style="background: #e0f2fe; padding: 2px 6px; border-radius: 2px;">${docs.mqtt_configuration.topic}</code></p>
+                        <p style="margin: 5px 0; font-size: 13px; color: #6b7280;"><strong>Format Data:</strong> ${docs.mqtt_configuration.data_format}</p>
+                        <p style="margin: 5px 0; font-size: 13px; color: #6b7280;"><strong>Update Interval:</strong> ${docs.mqtt_configuration.update_interval}</p>
+                    </div>
+                    
+                    <!-- Troubleshooting -->
+                    <h3 style="border-bottom: 2px solid #3b82f6; padding-bottom: 10px; margin-top: 30px;">
+                        <i class="fas fa-wrench"></i> Troubleshooting
+                    </h3>
+                    <div style="display: grid; gap: 12px; margin-bottom: 20px;">
+            `;
+            
+            for (const [issue, solution] of Object.entries(docs.troubleshooting)) {
+                html += `
+                    <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px; border-radius: 4px;">
+                        <strong style="color: #92400e;">${issue.replace(/_/g, ' ').toUpperCase()}</strong>
+                        <p style="margin: 5px 0 0 0; font-size: 13px; color: #92400e;">${solution}</p>
+                    </div>
+                `;
+            }
+            
+            html += `
+                    </div>
+                </div>
+            `;
+            
+            content.innerHTML = html;
+        })
+        .catch(error => {
+            console.error('Error loading documentation:', error);
+            document.getElementById('docsContent').innerHTML = '<p style="color: #ef4444;">✗ Gagal memuat dokumentasi</p>';
+        });
+}
+
+// ============================================
+// INITIALIZE ON PAGE LOAD
+// ============================================
+
+// AI & Analytics Functions
+function loadAIPrediction() {
+    console.log('Loading AI prediction...');
+    
+    Promise.all([
+        fetch('/api/ai-prediction/').then(r => r.json()),
+        fetch('/api/anomaly-detection/').then(r => r.json())
+    ])
+    .then(([predictionData, anomalyData]) => {
+        if (!predictionData.success) {
+            document.getElementById('forecastContainer').innerHTML = 
+                `<div style="padding: 20px; text-align: center; color: #ef4444;">
+                    <i class="fas fa-exclamation-circle"></i> ${predictionData.error || 'Error loading prediction'}
+                 </div>`;
+            return;
+        }
+        
+        // Render forecast
+        const forecast = predictionData.forecast;
+        const trendClass = forecast.trend === 'Meningkat' ? '#ef4444' : forecast.trend === 'Menurun' ? '#10b981' : '#3b82f6';
+        const trendBg = forecast.trend === 'Meningkat' ? '#fee2e2' : forecast.trend === 'Menurun' ? '#f0fdf4' : '#eff6ff';
+        
+        // Format time label based on hours_ahead
+        const timeLabel = forecast.hours_ahead === 0.5 ? 'Prediksi 30 Menit Ke Depan' : 'Prediksi 1 Jam Ke Depan';
+        
+        let html = `
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+                <div style="background: #f0f9ff; border: 2px solid #0284c7; border-radius: 8px; padding: 20px; text-align: center;">
+                    <div style="font-size: 13px; color: #6b7280; margin-bottom: 10px;">Pembacaan Saat Ini</div>
+                    <div style="font-size: 32px; font-weight: bold; color: #0284c7;">${forecast.current_ppm}</div>
+                    <div style="font-size: 11px; color: #6b7280; margin-top: 5px;">ppm</div>
+                </div>
+                <div style="background: #fef3c7; border: 2px solid #f59e0b; border-radius: 8px; padding: 20px; text-align: center;">
+                    <div style="font-size: 13px; color: #6b7280; margin-bottom: 10px;">${timeLabel}</div>
+                    <div style="font-size: 32px; font-weight: bold; color: #f59e0b;">${forecast.predicted_ppm}</div>
+                    <div style="font-size: 11px; color: #6b7280; margin-top: 5px;">ppm</div>
+                </div>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <div style="background: ${trendBg}; border: 2px solid ${trendClass}; border-radius: 8px; padding: 15px; text-align: center;">
+                    <div style="font-size: 13px; color: #6b7280; margin-bottom: 5px;">Tren</div>
+                    <div style="font-size: 24px; margin-bottom: 5px;">${forecast.trend_icon}</div>
+                    <div style="font-weight: bold; color: ${trendClass};">${forecast.trend}</div>
+                </div>
+                <div style="background: #f0fdf4; border: 2px solid #10b981; border-radius: 8px; padding: 15px; text-align: center;">
+                    <div style="font-size: 13px; color: #6b7280; margin-bottom: 5px;">Confidence</div>
+                    <div style="font-size: 24px; font-weight: bold; color: #10b981;">${forecast.confidence}%</div>
+                    <div style="font-size: 11px; color: #6b7280; margin-top: 5px;">Model: ${forecast.model_type}</div>
+                </div>
+            </div>
+        `;
+        
+        document.getElementById('forecastContainer').innerHTML = html;
+        
+        // Render anomaly detection
+        if (!anomalyData.success) {
+            document.getElementById('anomalyContainer').innerHTML += 
+                `<p style="color: #ef4444; margin-top: 10px;">⚠️ ${anomalyData.error}</p>`;
+            return;
+        }
+        
+        const anomaly = anomalyData.anomaly;
+        const anomalyColor = anomaly.is_anomaly ? '#ef4444' : '#10b981';
+        const anomalyBg = anomaly.is_anomaly ? '#fee2e2' : '#f0fdf4';
+        const anomalyStatus = anomaly.is_anomaly ? '⚠️ ANOMALI TERDETEKSI' : '✓ NORMAL';
+        
+        const anomalyHtml = `
+            <div style="background: ${anomalyBg}; border: 2px solid ${anomalyColor}; border-radius: 8px; padding: 20px;">
+                <!-- Header dengan Status -->
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+                    <div style="font-weight: bold; color: ${anomalyColor}; font-size: 16px;">${anomalyStatus}</div>
+                    <div style="background: ${anomalyColor}; color: white; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600;">
+                        ${anomaly.severity}
+                    </div>
+                </div>
+                
+                <!-- Reason Section -->
+                <div style="margin-bottom: 15px; padding: 12px; background: white; border-radius: 4px; border-left: 3px solid ${anomalyColor};">
+                    <div style="font-size: 11px; color: #6b7280; text-transform: uppercase; font-weight: 600; margin-bottom: 5px;">Penjelasan</div>
+                    <div style="color: #1f2937; font-size: 13px; font-weight: 500;">${anomaly.reason}</div>
+                </div>
+                
+                <!-- Confidence & Z-Score Section -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 15px;">
+                    <div style="background: white; padding: 12px; border-radius: 4px; cursor: help; position: relative;" 
+                         title="Tingkat kepercayaan sistem dalam mendeteksi anomali (0-100%). Semakin tinggi = semakin yakin ada anomali.">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                            <div style="font-size: 11px; color: #6b7280;">Confidence Level</div>
+                            <span style="background: #dbeafe; color: #0284c7; border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold;">?</span>
+                        </div>
+                        <div style="font-weight: 600; color: #1f2937; font-size: 18px;">${anomaly.confidence}%</div>
+                        <div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">
+                            ${anomaly.confidence > 80 ? '🔴 Sangat Tinggi' : anomaly.confidence > 50 ? '🟡 Sedang' : '🟢 Rendah'}
+                        </div>
+                    </div>
+                    <div style="background: white; padding: 12px; border-radius: 4px; cursor: help; position: relative;"
+                         title="Z-Score = berapa banyak deviasi dari rata-rata (dalam unit standar deviasi). Threshold: >3 = anomali. Rule: 3-Sigma = 99.7% data harus dalam range.">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                            <div style="font-size: 11px; color: #6b7280;">Z-Score</div>
+                            <span style="background: #dbeafe; color: #0284c7; border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold;">?</span>
+                        </div>
+                        <div style="font-weight: 600; color: #1f2937; font-size: 18px;">${anomaly.z_score}</div>
+                        <div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">
+                            Threshold: 3.0 ${anomaly.z_score > 3 ? '❌ Terlampaui' : '✓ Dalam batas'}
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Current vs Historical -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 15px;">
+                    <div style="background: white; padding: 12px; border-radius: 4px; border-top: 2px solid #0284c7; cursor: help;"
+                         title="Nilai pembacaan ammonia dari sensor saat ini. Ini dibandingkan dengan rata-rata 24 jam untuk mendeteksi anomali.">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                            <div style="font-size: 11px; color: #6b7280;">Pembacaan Saat Ini</div>
+                            <span style="background: #dbeafe; color: #0284c7; border-radius: 50%; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: bold;">?</span>
+                        </div>
+                        <div style="font-weight: 600; color: #0284c7; font-size: 16px;">${anomaly.current_value} ppm</div>
+                    </div>
+                    <div style="background: white; padding: 12px; border-radius: 4px; border-top: 2px solid #8b5cf6; cursor: help;"
+                         title="Rata-rata konsentrasi ammonia dari 24 jam terakhir. Digunakan sebagai baseline untuk mendeteksi penyimpangan abnormal.">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                            <div style="font-size: 11px; color: #6b7280;">Rata-Rata (24h)</div>
+                            <span style="background: #dbeafe; color: #0284c7; border-radius: 50%; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: bold;">?</span>
+                        </div>
+                        <div style="font-weight: 600; color: #8b5cf6; font-size: 16px;">${anomaly.historical_mean} ppm</div>
+                    </div>
+                    <div style="background: white; padding: 12px; border-radius: 4px; cursor: help;"
+                         title="Persentase perbedaan pembacaan saat ini dari rata-rata. Positif (+) = melebihi, Negatif (-) = kurang dari rata-rata.">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                            <div style="font-size: 11px; color: #6b7280;">Deviasi</div>
+                            <span style="background: #dbeafe; color: #0284c7; border-radius: 50%; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: bold;">?</span>
+                        </div>
+                        <div style="font-weight: 600; color: ${anomaly.deviation_percent > 0 ? '#ef4444' : '#10b981'}; font-size: 16px;">
+                            ${anomaly.deviation_percent > 0 ? '+' : ''}${anomaly.deviation_percent}%
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Historical Statistics -->
+                <div style="background: white; padding: 12px; border-radius: 4px; margin-bottom: 15px;">
+                    <div style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <div style="font-size: 11px; color: #6b7280; text-transform: uppercase; font-weight: 600;">Statistik Riwayat (24 Jam)</div>
+                        <span style="background: #dbeafe; color: #0284c7; border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; margin-left: 8px; cursor: help;"
+                              title="Statistik lengkap dari data 24 jam terakhir, digunakan untuk analisis anomali.">?</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; font-size: 12px;">
+                        <div style="cursor: help;" title="Nilai terendah ammonia yang tercatat dalam 24 jam. Jika pembacaan saat ini jauh di bawah ini, mungkin anomali.">
+                            <div style="color: #9ca3af; margin-bottom: 3px;">Minimum</div>
+                            <div style="font-weight: 600; color: #1f2937;">${anomaly.historical_min} ppm</div>
+                        </div>
+                        <div style="cursor: help;" title="Nilai tertinggi ammonia yang tercatat dalam 24 jam. Jika pembacaan saat ini jauh di atas ini, mungkin anomali.">
+                            <div style="color: #9ca3af; margin-bottom: 3px;">Maksimum</div>
+                            <div style="font-weight: 600; color: #1f2937;">${anomaly.historical_max} ppm</div>
+                        </div>
+                        <div style="cursor: help;" title="Standar Deviasi = ukuran variabilitas/sebaran data. Semakin kecil = data lebih konsisten, semakin besar = data lebih berfluktuasi.">
+                            <div style="color: #9ca3af; margin-bottom: 3px;">Std Dev</div>
+                            <div style="font-weight: 600; color: #1f2937;">${anomaly.historical_std}</div>
+                        </div>
+                        <div style="cursor: help;" title="Jumlah data point yang dianalisis dalam 24 jam terakhir. Semakin banyak = hasil deteksi semakin akurat.">
+                            <div style="color: #9ca3af; margin-bottom: 3px;">Data Points</div>
+                            <div style="font-weight: 600; color: #1f2937;">${anomaly.data_points}</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Metode Deteksi & Rekomendasi -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                    <div style="background: white; padding: 12px; border-radius: 4px; cursor: help;"
+                         title="Statistical Z-Score menggunakan rumus 3-Sigma Rule: jika pembacaan > 3x standar deviasi dari rata-rata, dianggap anomali. 3-Sigma = 99.7% confidence level.">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                            <div style="font-size: 11px; color: #6b7280; font-weight: 600;">Metode Deteksi</div>
+                            <span style="background: #dbeafe; color: #0284c7; border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold;">?</span>
+                        </div>
+                        <div style="font-weight: 600; color: #1f2937; font-size: 13px;">${anomaly.method}</div>
+                        <div style="font-size: 10px; color: #9ca3af; margin-top: 5px;">Rumus: Z = (X - μ) / σ</div>
+                    </div>
+                    <div style="background: ${anomaly.is_anomaly ? '#fee2e2' : '#f0fdf4'}; padding: 12px; border-radius: 4px; border-left: 2px solid ${anomalyColor}; cursor: help;"
+                         title="Saran action berdasarkan hasil deteksi anomali. Jika anomali HIGH, segera periksa sensor. Jika normal, tidak perlu tindakan.">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                            <div style="font-size: 11px; color: #6b7280; font-weight: 600;">Rekomendasi</div>
+                            <span style="background: ${anomaly.is_anomaly ? '#fee2e2' : '#f0fdf4'}; color: ${anomalyColor}; border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; border: 1px solid ${anomalyColor};">?</span>
+                        </div>
+                        <div style="font-weight: 500; color: ${anomalyColor}; font-size: 12px;">${anomaly.recommendation}</div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.getElementById('anomalyContainer').innerHTML = anomalyHtml;
+        
+        // Update menu indicator - tambahkan badge jika ada anomaly
+        updateAnomalyMenuIndicator(anomaly.is_anomaly, anomaly.severity);
+        
+        // Show browser notification jika ada anomaly
+        if (anomaly.is_anomaly && Notification.permission === 'granted') {
+            new Notification('⚠️ ANOMALI AMMONIA TERDETEKSI', {
+                body: `${anomaly.reason}\n\nSeverity: ${anomaly.severity} | Confidence: ${anomaly.confidence}%`,
+                icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%23ef4444" width="100" height="100"/><text x="50" y="70" font-size="60" fill="white" text-anchor="middle">!</text></svg>',
+                badge: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="%23ef4444"/></svg>',
+                tag: 'ammonia-anomaly',
+                requireInteraction: true
+            });
+        }
+    })
+    .catch(error => {
+        console.error('Error loading AI prediction:', error);
+        document.getElementById('forecastContainer').innerHTML = 
+            `<p style="color: #ef4444;">✗ Gagal memuat prediksi AI</p>`;
+    });
+}
+
+function loadAnalytics(period = '24h') {
+    console.log('Loading analytics for period:', period);
+    
+    // Update button states - find the button that corresponds to the period
+    document.querySelectorAll('.analytics-period-btn').forEach(btn => {
+        btn.style.background = '#f3f4f6';
+        btn.style.color = '#1f2937';
+        btn.style.border = '2px solid #e5e7eb';
+    });
+    
+    // Highlight the active button based on period
+    const buttons = document.querySelectorAll('.analytics-period-btn');
+    buttons.forEach(btn => {
+        if ((period === '24h' && btn.textContent.includes('24 Jam')) ||
+            (period === '7d' && btn.textContent.includes('7 Hari')) ||
+            (period === '30d' && btn.textContent.includes('30 Hari'))) {
+            btn.style.background = '#dbeafe';
+            btn.style.color = '#075985';
+            btn.style.border = '2px solid #0284c7';
+        }
+    });
+    
+    Promise.all([
+        fetch(`/api/analytics-summary/?period=${period}`).then(r => r.json()),
+        fetch('/api/pattern-analysis/').then(r => r.json())
+    ])
+    .then(([analyticsData, patternData]) => {
+        if (!analyticsData.success) {
+            console.error('Analytics error:', analyticsData.error);
+            return;
+        }
+        
+        // Update statistics table
+        const stats = analyticsData.analytics.statistics;
+        document.getElementById('stat-current').textContent = stats.current;
+        document.getElementById('stat-avg').textContent = stats.average;
+        document.getElementById('stat-min').textContent = stats.minimum;
+        document.getElementById('stat-max').textContent = stats.maximum;
+        document.getElementById('stat-std').textContent = stats.std_deviation;
+        document.getElementById('stat-p25').textContent = stats.percentile_25;
+        document.getElementById('stat-p50').textContent = stats.percentile_50;
+        document.getElementById('stat-p75').textContent = stats.percentile_75;
+        
+        // Update trend analysis
+        const trend = analyticsData.analytics.trend;
+        const trendColor = trend.direction.includes('Meningkat') ? '#ef4444' : trend.direction.includes('Menurun') ? '#10b981' : '#3b82f6';
+        const trendIcon = trend.direction.includes('Meningkat') ? '📈' : trend.direction.includes('Menurun') ? '📉' : '➡️';
+        
+        const trendHtml = `
+            <div style="margin-bottom: 15px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                    <div style="background: #f0f9ff; border: 2px solid #0284c7; border-radius: 6px; padding: 15px; text-align: center; cursor: help;"
+                         title="Trend Direction: Apakah ammonia cenderung Meningkat (📈), Menurun (📉), atau Stabil (➡️) dalam periode ini. Indikator penting untuk efektivitas sistem kontrol.">
+                        <div style="font-size: 28px; margin-bottom: 10px;">${trendIcon}</div>
+                        <div style="font-weight: bold; font-size: 16px; color: #0284c7;">${trend.direction}</div>
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 5px;">Arah Trend</div>
+                    </div>
+                    <div style="background: #f0fdf4; border: 2px solid #10b981; border-radius: 6px; padding: 15px; text-align: center; cursor: help;"
+                         title="Persentase Perubahan: Berapa % ammonia berubah dibanding awal periode. Positif = naik, Negatif = turun. Semakin besar angka = semakin signifikan perubahannya.">
+                        <div style="font-size: 24px; font-weight: bold; color: ${trend.change_percent >= 0 ? '#ef4444' : '#10b981'};">${trend.change_percent >= 0 ? '+' : ''}${trend.change_percent}%</div>
+                        <div style="font-size: 12px; color: #6b7280; margin-top: 5px;">Perubahan Periode</div>
+                    </div>
+                </div>
+                <div style="margin-top: 15px; padding: 15px; background: #f9fafb; border-left: 3px solid #0284c7; border-radius: 4px; cursor: help;"
+                     title="Interpretasi Trend: Penjelasan lengkap tentang arah trend dan implikasinya terhadap sistem operasional.">
+                    <div style="font-size: 11px; color: #6b7280; text-transform: uppercase; font-weight: 600; margin-bottom: 8px;">Interpretasi</div>
+                    <p style="margin: 0; font-size: 13px; color: #1f2937;">${trend.interpretation}</p>
+                </div>
+            </div>
+        `;
+        
+        document.getElementById('trendContainer').innerHTML = trendHtml;
+        
+        // Update pattern analysis
+        if (patternData.success) {
+            const pattern = patternData.pattern;
+            
+            // Find peak hours (highest average) and low hours (lowest average)
+            const hourlyStats = pattern.hourly_stats;
+            
+            // Filter out hours dengan 0 ppm (tidak ada data) untuk peak dan low hours
+            const hourlyArray = Object.entries(hourlyStats)
+                .filter(([hour, stats]) => stats.avg > 0)  // Only include hours dengan data
+                .map(([hour, stats]) => ({hour: parseInt(hour), ...stats}))
+                .sort((a, b) => b.avg - a.avg);
+            
+            let peakHoursText = '';
+            let lowHoursText = '';
+            
+            if (hourlyArray.length > 0) {
+                const peakHours = hourlyArray.slice(0, 3);
+                const lowHours = hourlyArray.slice(-3).reverse();
+                
+                peakHoursText = peakHours
+                    .map(h => `${String(h.hour).padStart(2, '0')}:00 (${h.avg} ppm)`)
+                    .join(', ');
+                    
+                lowHoursText = lowHours
+                    .map(h => `${String(h.hour).padStart(2, '0')}:00 (${h.avg} ppm)`)
+                    .join(', ');
+            } else {
+                peakHoursText = 'Tidak ada data';
+                lowHoursText = 'Tidak ada data';
+            }
+            
+            let patternHtml = `
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+                    <div style="background: #f0fdf4; border: 2px solid #10b981; border-radius: 6px; padding: 15px; text-align: center; cursor: help;"
+                         title="Jam Puncak: 3 jam dengan konsentrasi ammonia tertinggi dalam sehari. Biasanya menunjukkan waktu operasional puncak atau produksi maksimal. Penting untuk optimasi sistem ventilasi dan jadwal maintenance.">
+                        <div style="font-size: 14px; color: #6b7280; margin-bottom: 10px; font-weight: 600;">📈 JAM PUNCAK (Tertinggi)</div>
+                        <div style="font-weight: bold; color: #10b981; font-size: 13px; line-height: 1.8;">
+                            ${peakHoursText}
+                        </div>
+                    </div>
+                    <div style="background: #f0f9ff; border: 2px solid #0284c7; border-radius: 6px; padding: 15px; text-align: center; cursor: help;"
+                         title="Jam Rendah: 3 jam dengan konsentrasi ammonia terendah dalam sehari. Biasanya menunjukkan waktu offline atau minimal operasional. Berguna untuk jadwal maintenance atau pembersihan sistem.">
+                        <div style="font-size: 14px; color: #6b7280; margin-bottom: 10px; font-weight: 600;">📉 JAM RENDAH (Terendah)</div>
+                        <div style="font-weight: bold; color: #0284c7; font-size: 13px; line-height: 1.8;">
+                            ${lowHoursText}
+                        </div>
+                    </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 15px;">
+                    <div style="background: #fffbeb; border: 2px solid #f59e0b; border-radius: 6px; padding: 15px; cursor: help;"
+                         title="Rata-Rata Keseluruhan: Nilai average ammonia untuk semua jam dalam sehari. Berguna sebagai benchmark untuk perbandingan dan evaluasi trend harian.">
+                        <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px; font-weight: 600;">📊 Rata-Rata Keseluruhan</div>
+                        <div style="font-weight: bold; color: #f59e0b; font-size: 18px;">${pattern.overall_avg} ppm</div>
+                    </div>
+                    <div style="background: #f3f4f6; border: 2px solid #9ca3af; border-radius: 6px; padding: 15px; cursor: help;"
+                         title="Data Points: Jumlah pengukuran dalam 7 hari terakhir. Semakin banyak = analisis pola semakin akurat. Minimal 10 data points untuk analisis yang valid.">
+                        <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px; font-weight: 600;">📈 Data Points</div>
+                        <div style="font-weight: bold; color: #1f2937; font-size: 18px;">${pattern.data_points || 0}</div>
+                    </div>
+                </div>
+                ${hourlyArray.length === 0 ? '<div style="margin-top: 15px; padding: 15px; background: #fef3c7; border-left: 3px solid #f59e0b; border-radius: 4px;"><p style="margin: 0; color: #92400e; font-size: 13px;">⚠️ Data tidak mencukupi untuk analisis pola harian. Tunggu hingga ada lebih banyak data pengukuran.</p></div>' : ''}
+            `;
+            
+            document.getElementById('patternContainer').innerHTML = patternHtml;
+        }
+    })
+    .catch(error => {
+        console.error('Error loading analytics:', error);
+        document.getElementById('trendContainer').innerHTML = 
+            `<p style="color: #ef4444;">✗ Gagal memuat data tren</p>`;
+    });
+}
+
+// Function untuk update visual indicator di menu jika ada anomaly
+function updateAnomalyMenuIndicator(isAnomaly, severity) {
+    const menuItem = document.querySelector('[data-page="ai-prediction"]');
+    if (!menuItem) return;
+    
+    // Remove old badge jika ada
+    const oldBadge = menuItem.querySelector('.anomaly-badge');
+    if (oldBadge) {
+        oldBadge.remove();
+    }
+    
+    // Tambahkan badge baru jika ada anomaly
+    if (isAnomaly) {
+        const badgeColor = severity === 'HIGH' ? '#ef4444' : severity === 'MEDIUM' ? '#f59e0b' : '#3b82f6';
+        const badge = document.createElement('span');
+        badge.className = 'anomaly-badge';
+        badge.innerHTML = '●';
+        badge.style.cssText = `
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            width: 16px;
+            height: 16px;
+            background: ${badgeColor};
+            border: 2px solid white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 8px;
+            animation: pulse 1.5s infinite;
+        `;
+        
+        // Tambahkan CSS animation jika belum ada
+        if (!document.querySelector('style[data-anomaly-pulse]')) {
+            const style = document.createElement('style');
+            style.setAttribute('data-anomaly-pulse', 'true');
+            style.innerHTML = `
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; transform: scale(1); }
+                    50% { opacity: 0.7; transform: scale(1.2); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+        
+        menuItem.style.position = 'relative';
+        menuItem.appendChild(badge);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', initDashboard);
+

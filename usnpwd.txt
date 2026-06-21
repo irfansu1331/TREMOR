@@ -1,0 +1,5 @@
+login server : test
+password server : test
+
+username mqtt : tremor
+password mqtt : @tr3m0r
