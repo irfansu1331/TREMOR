@@ -24,11 +24,20 @@ Sistem monitoring suhu dan kelembaban ruangan berbasis ESP32, MQTT, Zabbix, dan 
 - PostgreSQL
 - Django
 
+
 ## Arsitektur Sistem
 
 ESP32 → MQTT Broker → Python Subscriber → Zabbix → Telegram
 
 ## Instalasi
+
+
+
+### OVA VM FILE
+
+```bash
+https://drive.google.com/file/d/1Qyzl7lzCgsKk8jreH_VVWpGoBR7ELr8_/view?usp=sharing
+```
 
 ### Clone Repository
 
@@ -57,7 +66,7 @@ MQTT_PORT = 1883
 ```bash
 python manage.py start_mqtt
 ```
-## Menjalankan Script zabbix di servrr
+## Menjalankan Script zabbix di server
 
 ```bash
 python3 mqtttozabbix.py
